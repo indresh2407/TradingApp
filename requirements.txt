@@ -1,0 +1,35 @@
+# SIDDHI - Intelligent Trading Platform Dependencies
+
+# Kotak Neo API Client (install from GitHub)
+# pip install "git+https://github.com/Kotak-Neo/kotak-neo-api.git#egg=neo_api_client"
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Technical Analysis
+ta>=0.10.2
+
+# Configuration
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+
+# HTTP & WebSocket
+requests>=2.31.0
+websocket-client>=1.6.0
+
+# Scheduling
+schedule>=1.2.0
+
+# Logging
+loguru>=0.7.0
+
+# CLI Interface
+click>=8.1.0
+rich>=13.0.0
+
+# Web Dashboard
+streamlit>=1.30.0
+
+# Live Market Data
+yfinance>=0.2.36

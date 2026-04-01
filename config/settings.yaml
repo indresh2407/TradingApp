@@ -1,0 +1,34 @@
+intraday:
+  enabled: true
+  end_time: '15:00'
+  squareoff_time: '15:15'
+  start_time: 09:20
+logging:
+  backup_count: 5
+  file_path: logs/trading.log
+  level: INFO
+  max_file_size_mb: 10
+notifications:
+  enabled: false
+orders:
+  default_order_type: LIMIT
+  default_product: MIS
+  duplicate_order_cooldown_seconds: 60
+  retry_attempts: 3
+  retry_delay_seconds: 2
+risk:
+  default_stoploss_pct: 1.5
+  default_target_pct: 3.0
+  mandatory_stoploss: true
+  max_daily_loss_pct: 2
+  max_open_positions: 3
+  max_position_pct: 10
+segments:
+  equity: true
+  fno: true
+swing:
+  enabled: true
+  max_holding_days: 10
+trading:
+  capital: 100000
+  mode: live

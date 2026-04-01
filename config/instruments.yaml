@@ -1,0 +1,43 @@
+# Watchlist and Tradeable Instruments
+
+equity:
+  - symbol: "RELIANCE"
+    exchange: "NSE"
+    enabled: true
+  - symbol: "TCS"
+    exchange: "NSE"
+    enabled: true
+  - symbol: "INFY"
+    exchange: "NSE"
+    enabled: true
+  - symbol: "HDFCBANK"
+    exchange: "NSE"
+    enabled: true
+  - symbol: "ICICIBANK"
+    exchange: "NSE"
+    enabled: true
+  - symbol: "SBIN"
+    exchange: "NSE"
+    enabled: true
+  - symbol: "TATAMOTORS"
+    exchange: "NSE"
+    enabled: true
+  - symbol: "ITC"
+    exchange: "NSE"
+    enabled: true
+
+fno:
+  - symbol: "NIFTY"
+    exchange: "NFO"
+    instrument_type: "OPTIDX"
+    enabled: true
+  - symbol: "BANKNIFTY"
+    exchange: "NFO"
+    instrument_type: "OPTIDX"
+    enabled: true
+
+indices:
+  - symbol: "NIFTY 50"
+    exchange: "NSE"
+  - symbol: "NIFTY BANK"
+    exchange: "NSE"
