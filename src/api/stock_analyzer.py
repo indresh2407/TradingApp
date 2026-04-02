@@ -214,6 +214,278 @@ def calculate_momentum(prices: pd.Series, period: int = 10) -> float:
     return ((prices.iloc[-1] - prices.iloc[-period]) / prices.iloc[-period]) * 100
 
 
+def calculate_roc(prices: pd.Series, period: int = 10) -> Dict[str, Any]:
+    """
+    Calculate Rate of Change (ROC) - measures momentum/speed of price movement
+    
+    Returns:
+        Dict with ROC value, signal, and divergence detection
+    """
+    if len(prices) < period + 5:
+        return {"roc": 0, "signal": "NEUTRAL", "divergence": False, "weakening": False}
+    
+    # ROC = ((Current Price - Price n periods ago) / Price n periods ago) * 100
+    roc = ((prices.iloc[-1] - prices.iloc[-period]) / prices.iloc[-period]) * 100
+    prev_roc = ((prices.iloc[-2] - prices.iloc[-period-1]) / prices.iloc[-period-1]) * 100
+    
+    # Check for divergence (price making new highs but ROC making lower highs)
+    price_higher = prices.iloc[-1] > prices.iloc[-5:-1].max()
+    roc_lower = roc < prev_roc
+    bearish_divergence = price_higher and roc_lower and roc > 0
+    
+    # Check for bullish divergence (price making new lows but ROC making higher lows)
+    price_lower = prices.iloc[-1] < prices.iloc[-5:-1].min()
+    roc_higher = roc > prev_roc
+    bullish_divergence = price_lower and roc_higher and roc < 0
+    
+    # Momentum weakening
+    weakening = abs(roc) < abs(prev_roc)
+    
+    if roc > 2:
+        signal = "BULLISH"
+    elif roc < -2:
+        signal = "BEARISH"
+    else:
+        signal = "NEUTRAL"
+    
+    return {
+        "roc": round(roc, 2),
+        "prev_roc": round(prev_roc, 2),
+        "signal": signal,
+        "bearish_divergence": bearish_divergence,
+        "bullish_divergence": bullish_divergence,
+        "weakening": weakening
+    }
+
+
+def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, 
+                  di_length: int = 7, adx_smoothing: int = 7) -> Dict[str, Any]:
+    """
+    Calculate ADX (Average Directional Index) - measures trend strength
+    
+    Parameters:
+        di_length: Period for DI calculation (default 7 for faster response)
+        adx_smoothing: Period for ADX smoothing (default 7 for faster response)
+    
+    ADX > 25 = Strong trend
+    ADX < 20 = Weak/No trend
+    ADX falling = Trend weakening (prepare for reversal)
+    
+    Returns:
+        Dict with ADX value, trend strength, and direction
+    """
+    if len(close) < di_length + adx_smoothing + 5:
+        return {"adx": 0, "trend_strength": "WEAK", "weakening": False, "plus_di": 0, "minus_di": 0}
+    
+    # Calculate True Range
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=di_length).mean()
+    
+    # Calculate +DM and -DM
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
+    
+    # Smooth the DMs using DI length
+    plus_dm_smooth = plus_dm.rolling(window=di_length).mean()
+    minus_dm_smooth = minus_dm.rolling(window=di_length).mean()
+    
+    # Calculate +DI and -DI
+    plus_di = 100 * (plus_dm_smooth / atr)
+    minus_di = 100 * (minus_dm_smooth / atr)
+    
+    # Calculate DX and ADX (smoothed with adx_smoothing period)
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 0.0001)
+    adx = dx.rolling(window=adx_smoothing).mean()
+    
+    current_adx = adx.iloc[-1] if not adx.empty else 0
+    prev_adx = adx.iloc[-2] if len(adx) > 1 else current_adx
+    
+    # Determine trend strength
+    if current_adx >= 40:
+        trend_strength = "VERY_STRONG"
+    elif current_adx >= 25:
+        trend_strength = "STRONG"
+    elif current_adx >= 20:
+        trend_strength = "MODERATE"
+    else:
+        trend_strength = "WEAK"
+    
+    # ADX falling = trend weakening
+    weakening = current_adx < prev_adx and current_adx > 20
+    
+    return {
+        "adx": round(current_adx, 1),
+        "prev_adx": round(prev_adx, 1),
+        "trend_strength": trend_strength,
+        "weakening": weakening,
+        "plus_di": round(plus_di.iloc[-1], 1) if not plus_di.empty else 0,
+        "minus_di": round(minus_di.iloc[-1], 1) if not minus_di.empty else 0,
+        "trend_direction": "BULLISH" if plus_di.iloc[-1] > minus_di.iloc[-1] else "BEARISH"
+    }
+
+
+def calculate_bb_advanced(close: pd.Series, period: int = 20, std_dev: float = 2.0) -> Dict[str, Any]:
+    """
+    Advanced Bollinger Band analysis with Squeeze and Walk detection
+    
+    - Squeeze: Bands narrowing (volatility compression, breakout coming)
+    - Walk: Price hugging outer band (strong trend)
+    - Curl: Price failing to touch outer band and curling toward middle (reversal sign)
+    
+    Returns:
+        Dict with BB values and advanced signals
+    """
+    if len(close) < period + 5:
+        return {
+            "middle": close.iloc[-1], "upper": close.iloc[-1], "lower": close.iloc[-1],
+            "squeeze": False, "walking_upper": False, "walking_lower": False,
+            "curling_down": False, "curling_up": False, "percent_b": 50
+        }
+    
+    middle = close.rolling(window=period).mean()
+    std = close.rolling(window=period).std()
+    upper = middle + (std_dev * std)
+    lower = middle - (std_dev * std)
+    
+    current_price = close.iloc[-1]
+    prev_price = close.iloc[-2]
+    
+    current_middle = middle.iloc[-1]
+    current_upper = upper.iloc[-1]
+    current_lower = lower.iloc[-1]
+    
+    # Bandwidth for squeeze detection
+    bandwidth = (current_upper - current_lower) / current_middle * 100
+    prev_bandwidth = (upper.iloc[-5] - lower.iloc[-5]) / middle.iloc[-5] * 100 if len(upper) > 5 else bandwidth
+    
+    # Squeeze: bandwidth contracting (volatility compression)
+    squeeze = bandwidth < prev_bandwidth * 0.8
+    
+    # Percent B: where price is within the bands (0 = lower, 100 = upper)
+    percent_b = ((current_price - current_lower) / (current_upper - current_lower)) * 100 if (current_upper - current_lower) > 0 else 50
+    prev_percent_b = ((prev_price - lower.iloc[-2]) / (upper.iloc[-2] - lower.iloc[-2])) * 100 if len(upper) > 1 else 50
+    
+    # Walking the bands (price staying near outer bands in strong trend)
+    walking_upper = percent_b > 80 and close.tail(3).min() > middle.iloc[-3:].max()
+    walking_lower = percent_b < 20 and close.tail(3).max() < middle.iloc[-3:].min()
+    
+    # Curling: Price failing to touch outer band and moving toward middle
+    # Curling down: Was near upper band, now moving toward middle
+    curling_down = prev_percent_b > 70 and percent_b < prev_percent_b and percent_b < 70
+    # Curling up: Was near lower band, now moving toward middle
+    curling_up = prev_percent_b < 30 and percent_b > prev_percent_b and percent_b > 30
+    
+    # Signal based on position
+    if percent_b > 100:
+        signal = "OVERBOUGHT"
+    elif percent_b < 0:
+        signal = "OVERSOLD"
+    elif percent_b > 80:
+        signal = "BULLISH"
+    elif percent_b < 20:
+        signal = "BEARISH"
+    else:
+        signal = "NEUTRAL"
+    
+    return {
+        "middle": round(current_middle, 2),
+        "upper": round(current_upper, 2),
+        "lower": round(current_lower, 2),
+        "bandwidth": round(bandwidth, 2),
+        "percent_b": round(percent_b, 1),
+        "signal": signal,
+        "squeeze": squeeze,
+        "walking_upper": walking_upper,
+        "walking_lower": walking_lower,
+        "curling_down": curling_down,
+        "curling_up": curling_up
+    }
+
+
+def calculate_vwap_distance(high: pd.Series, low: pd.Series, close: pd.Series, 
+                            volume: pd.Series) -> Dict[str, Any]:
+    """
+    Calculate VWAP with Standard Deviation Bands (Rubber Band Effect)
+    
+    Price at 2nd or 3rd StdDev from VWAP = overextended, likely to snap back
+    
+    Returns:
+        Dict with VWAP, distance, and overextension signals
+    """
+    if len(close) < 20:
+        return {
+            "vwap": close.iloc[-1], "distance_pct": 0, "overextended_up": False,
+            "overextended_down": False, "band_1_upper": close.iloc[-1], "band_2_upper": close.iloc[-1]
+        }
+    
+    typical_price = (high + low + close) / 3
+    cumulative_tp_vol = (typical_price * volume).cumsum()
+    cumulative_vol = volume.cumsum()
+    vwap = cumulative_tp_vol / cumulative_vol
+    
+    current_vwap = vwap.iloc[-1]
+    current_price = close.iloc[-1]
+    
+    # Calculate VWAP Standard Deviation
+    squared_diff = ((typical_price - vwap) ** 2 * volume).cumsum()
+    variance = squared_diff / cumulative_vol
+    vwap_std = variance ** 0.5
+    current_std = vwap_std.iloc[-1]
+    
+    # VWAP Bands
+    band_1_upper = current_vwap + current_std
+    band_1_lower = current_vwap - current_std
+    band_2_upper = current_vwap + 2 * current_std
+    band_2_lower = current_vwap - 2 * current_std
+    band_3_upper = current_vwap + 3 * current_std
+    band_3_lower = current_vwap - 3 * current_std
+    
+    # Distance from VWAP as percentage
+    distance_pct = ((current_price - current_vwap) / current_vwap) * 100
+    
+    # Overextension detection (rubber band effect)
+    overextended_up = current_price >= band_2_upper
+    overextended_down = current_price <= band_2_lower
+    extreme_up = current_price >= band_3_upper
+    extreme_down = current_price <= band_3_lower
+    
+    # Signal
+    if extreme_up:
+        signal = "EXTREME_OVERBOUGHT"
+    elif extreme_down:
+        signal = "EXTREME_OVERSOLD"
+    elif overextended_up:
+        signal = "OVERBOUGHT"
+    elif overextended_down:
+        signal = "OVERSOLD"
+    elif current_price > band_1_upper:
+        signal = "BULLISH"
+    elif current_price < band_1_lower:
+        signal = "BEARISH"
+    else:
+        signal = "NEUTRAL"
+    
+    return {
+        "vwap": round(current_vwap, 2),
+        "distance_pct": round(distance_pct, 2),
+        "band_1_upper": round(band_1_upper, 2),
+        "band_1_lower": round(band_1_lower, 2),
+        "band_2_upper": round(band_2_upper, 2),
+        "band_2_lower": round(band_2_lower, 2),
+        "overextended_up": overextended_up,
+        "overextended_down": overextended_down,
+        "extreme_up": extreme_up,
+        "extreme_down": extreme_down,
+        "signal": signal
+    }
+
+
 def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
     """Calculate Average True Range"""
     tr1 = high - low
@@ -2945,15 +3217,11 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
         time_context = get_market_time_context()
         target_multiplier = time_context["target_multiplier"]
         
+        # Allow analysis even outside market hours (for preparation)
+        # Just show a warning but still generate signals
+        market_warning = None
         if not time_context["can_trade"]:
-            return {
-                "status": "success",
-                "long_signals": [],
-                "short_signals": [],
-                "total_analyzed": 0,
-                "time_context": time_context,
-                "warning": time_context.get("warning", "Market closed")
-            }
+            market_warning = time_context.get("warning", "Market closed - showing last available data")
         
         stocks_to_analyze = get_stocks_for_index(index_name)
         
@@ -2975,10 +3243,16 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                 # Get data for different timeframes
                 # 5-minute data (5 days)
                 hist_5m = ticker.history(period="5d", interval="5m")
-                # 15-minute data (5 days)  
-                hist_15m = ticker.history(period="5d", interval="15m")
+                # 10-minute data (calculated from 5m by resampling)
+                hist_10m = hist_5m.resample('10min').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last',
+                    'Volume': 'sum'
+                }).dropna()
                 
-                if hist_5m.empty or len(hist_5m) < 50 or hist_15m.empty or len(hist_15m) < 30:
+                if hist_5m.empty or len(hist_5m) < 50 or hist_10m.empty or len(hist_10m) < 20:
                     continue
                 
                 ltp = hist_5m['Close'].iloc[-1]
@@ -2989,13 +3263,13 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                 
                 # ============== 5-MINUTE ANALYSIS ==============
                 # VWAP (5m)
-                vwap_5m_data = calculate_vwap(hist_5m)
+                vwap_5m_data = calculate_vwap(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], hist_5m['Volume'])
                 vwap_5m = vwap_5m_data.get("vwap", ltp)
                 vwap_5m_signal = vwap_5m_data.get("signal", "NEUTRAL")
                 vwap_5m_dist = vwap_5m_data.get("distance_pct", 0)
                 
                 # Supertrend (5m)
-                st_5m_data = calculate_supertrend_simple(hist_5m)
+                st_5m_data = calculate_supertrend_simple(hist_5m['High'], hist_5m['Low'], hist_5m['Close'])
                 st_5m_signal = st_5m_data.get("signal", "NEUTRAL")
                 st_5m_value = st_5m_data.get("value", ltp)
                 st_5m_crossover = st_5m_data.get("crossover", False)
@@ -3009,26 +3283,26 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                 bb_5m_squeeze = bb_5m_data.get("squeeze", False)
                 bb_5m_pct_b = bb_5m_data.get("percent_b", 50)
                 
-                # ============== 15-MINUTE ANALYSIS ==============
-                # VWAP (15m)
-                vwap_15m_data = calculate_vwap(hist_15m)
-                vwap_15m = vwap_15m_data.get("vwap", ltp)
-                vwap_15m_signal = vwap_15m_data.get("signal", "NEUTRAL")
+                # ============== 10-MINUTE ANALYSIS ==============
+                # VWAP (10m)
+                vwap_10m_data = calculate_vwap(hist_10m['High'], hist_10m['Low'], hist_10m['Close'], hist_10m['Volume'])
+                vwap_10m = vwap_10m_data.get("vwap", ltp)
+                vwap_10m_signal = vwap_10m_data.get("signal", "NEUTRAL")
                 
-                # Supertrend (15m)
-                st_15m_data = calculate_supertrend_simple(hist_15m)
-                st_15m_signal = st_15m_data.get("signal", "NEUTRAL")
-                st_15m_value = st_15m_data.get("value", ltp)
-                st_15m_crossover = st_15m_data.get("crossover", False)
+                # Supertrend (10m)
+                st_10m_data = calculate_supertrend_simple(hist_10m['High'], hist_10m['Low'], hist_10m['Close'])
+                st_10m_signal = st_10m_data.get("signal", "NEUTRAL")
+                st_10m_value = st_10m_data.get("value", ltp)
+                st_10m_crossover = st_10m_data.get("crossover", False)
                 
-                # Bollinger Bands (15m)
-                bb_15m_data = calculate_bollinger_bands(hist_15m['Close'], period=20)
-                bb_15m_signal = bb_15m_data.get("signal", "NEUTRAL")
-                bb_15m_squeeze = bb_15m_data.get("squeeze", False)
+                # Bollinger Bands (10m)
+                bb_10m_data = calculate_bollinger_bands(hist_10m['Close'], period=20)
+                bb_10m_signal = bb_10m_data.get("signal", "NEUTRAL")
+                bb_10m_squeeze = bb_10m_data.get("squeeze", False)
                 
                 # ============== RSI & VOLUME ==============
                 rsi_5m = calculate_rsi(hist_5m['Close'], period=14)
-                rsi_15m = calculate_rsi(hist_15m['Close'], period=14)
+                rsi_10m = calculate_rsi(hist_10m['Close'], period=14)
                 
                 avg_volume = hist_5m['Volume'].rolling(50).mean().iloc[-1]
                 current_volume = hist_5m['Volume'].tail(5).mean()
@@ -3037,6 +3311,44 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                 # ============== ATR FOR TARGETS ==============
                 atr_5m = calculate_atr(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], period=14)
                 atr_pct = (atr_5m / ltp) * 100
+                
+                # ============== ADVANCED INDICATORS ==============
+                # ADX - Trend Strength Measurement (DI Length=7, ADX Smoothing=7 for faster response)
+                adx_data = calculate_adx(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], 
+                                         di_length=7, adx_smoothing=7)
+                adx_value = adx_data.get("adx", 0)
+                adx_trend_strength = adx_data.get("trend_strength", "WEAK")
+                adx_weakening = adx_data.get("weakening", False)
+                adx_direction = adx_data.get("trend_direction", "NEUTRAL")
+                plus_di = adx_data.get("plus_di", 0)
+                minus_di = adx_data.get("minus_di", 0)
+                
+                # ROC - Rate of Change / Momentum Divergence
+                roc_data = calculate_roc(hist_5m['Close'], period=10)
+                roc_value = roc_data.get("roc", 0)
+                roc_signal = roc_data.get("signal", "NEUTRAL")
+                roc_bearish_divergence = roc_data.get("bearish_divergence", False)
+                roc_bullish_divergence = roc_data.get("bullish_divergence", False)
+                roc_weakening = roc_data.get("weakening", False)
+                
+                # Advanced Bollinger Bands - Squeeze, Walk, Curl
+                bb_adv_5m = calculate_bb_advanced(hist_5m['Close'], period=20)
+                bb_squeeze = bb_adv_5m.get("squeeze", False)
+                bb_walking_upper = bb_adv_5m.get("walking_upper", False)
+                bb_walking_lower = bb_adv_5m.get("walking_lower", False)
+                bb_curling_down = bb_adv_5m.get("curling_down", False)
+                bb_curling_up = bb_adv_5m.get("curling_up", False)
+                bb_percent_b = bb_adv_5m.get("percent_b", 50)
+                
+                # VWAP Distance - Rubber Band Effect
+                vwap_dist_data = calculate_vwap_distance(
+                    hist_5m['High'], hist_5m['Low'], hist_5m['Close'], hist_5m['Volume']
+                )
+                vwap_overextended_up = vwap_dist_data.get("overextended_up", False)
+                vwap_overextended_down = vwap_dist_data.get("overextended_down", False)
+                vwap_extreme_up = vwap_dist_data.get("extreme_up", False)
+                vwap_extreme_down = vwap_dist_data.get("extreme_down", False)
+                vwap_rubber_band_signal = vwap_dist_data.get("signal", "NEUTRAL")
                 
                 # Day's high/low
                 today = datetime.now().date()
@@ -3060,6 +3372,7 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                 # LONG CONFIRMATION
                 long_confirmations = 0
                 long_reasons = []
+                long_warnings = []
                 
                 # 5m confirmations
                 if vwap_5m_signal == "BULLISH":
@@ -3079,33 +3392,74 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     else:
                         long_reasons.append("5m >BB Mid")
                 
-                # 15m confirmations
-                if vwap_15m_signal == "BULLISH":
+                # 10m confirmations
+                if vwap_10m_signal == "BULLISH":
                     long_confirmations += 1
-                    long_reasons.append("15m >VWAP")
-                if st_15m_signal == "BULLISH":
+                    long_reasons.append("10m >VWAP")
+                if st_10m_signal == "BULLISH":
                     long_confirmations += 1
-                    if st_15m_crossover:
+                    if st_10m_crossover:
                         long_confirmations += 1
-                        long_reasons.append("🔥 15m ST Cross")
+                        long_reasons.append("🔥 10m ST Cross")
                     else:
-                        long_reasons.append("15m ST+")
-                if bb_15m_signal in ["OVERSOLD", "BULLISH"]:
+                        long_reasons.append("10m ST+")
+                if bb_10m_signal in ["OVERSOLD", "BULLISH"]:
                     long_confirmations += 1
                 
-                # RSI confirmation
-                if rsi_5m < 40:
+                # ============== ADVANCED LONG CONFIRMATIONS ==============
+                # ADX - Strong bullish trend
+                if adx_value >= 25 and adx_direction == "BULLISH" and plus_di > minus_di:
                     long_confirmations += 1
-                    long_reasons.append(f"RSI {rsi_5m:.0f}")
+                    long_reasons.append(f"ADX Strong {adx_value:.0f}")
                 
-                # Volume confirmation
-                if volume_ratio > 1.5:
+                # ROC - Bullish momentum or bullish divergence
+                if roc_signal == "BULLISH" and not roc_weakening:
                     long_confirmations += 1
-                    long_reasons.append(f"Vol {volume_ratio:.1f}x")
+                    long_reasons.append("ROC+")
+                if roc_bullish_divergence:
+                    long_confirmations += 2  # Divergence is strong signal
+                    long_reasons.append("🔥 ROC Bull Divergence")
+                
+                # BB Squeeze - Breakout potential
+                if bb_squeeze and st_5m_signal == "BULLISH":
+                    long_confirmations += 1
+                    long_reasons.append("🎯 BB Squeeze")
+                
+                # BB Curling up from lower band (reversal from oversold)
+                if bb_curling_up:
+                    long_confirmations += 1
+                    long_reasons.append("BB Curl Up")
+                
+                # VWAP Overextended DOWN = Rubber band snap UP (mean reversion long)
+                if vwap_overextended_down and st_5m_signal == "BULLISH":
+                    long_confirmations += 1
+                    long_reasons.append("🎯 VWAP Snap")
+                
+                # ============== LONG WARNINGS (RISK FACTORS) ==============
+                # ADX weakening while bullish = trend fading
+                if adx_weakening and adx_direction == "BULLISH":
+                    long_warnings.append("⚠️ ADX Weakening")
+                    long_confirmations -= 1  # Reduce confidence
+                
+                # ROC bearish divergence = price rising but momentum falling
+                if roc_bearish_divergence:
+                    long_warnings.append("⚠️ ROC Divergence")
+                    long_confirmations -= 2  # Strong warning
+                
+                # BB Walking upper band = may be exhausted
+                if bb_walking_upper and bb_curling_down:
+                    long_warnings.append("⚠️ BB Curl Down")
+                    long_confirmations -= 1
+                
+                # VWAP overextended UP = too stretched, may snap back
+                if vwap_overextended_up or vwap_extreme_up:
+                    long_warnings.append("⚠️ VWAP Stretched")
+                    long_confirmations -= 1
                 
                 # SHORT CONFIRMATION
                 short_confirmations = 0
                 short_reasons = []
+                short_warnings = []
                 
                 # 5m confirmations
                 if vwap_5m_signal == "BEARISH":
@@ -3125,33 +3479,73 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     else:
                         short_reasons.append("5m <BB Mid")
                 
-                # 15m confirmations
-                if vwap_15m_signal == "BEARISH":
+                # 10m confirmations
+                if vwap_10m_signal == "BEARISH":
                     short_confirmations += 1
-                    short_reasons.append("15m <VWAP")
-                if st_15m_signal == "BEARISH":
+                    short_reasons.append("10m <VWAP")
+                if st_10m_signal == "BEARISH":
                     short_confirmations += 1
-                    if st_15m_crossover:
+                    if st_10m_crossover:
                         short_confirmations += 1
-                        short_reasons.append("🔥 15m ST Cross")
+                        short_reasons.append("🔥 10m ST Cross")
                     else:
-                        short_reasons.append("15m ST-")
-                if bb_15m_signal in ["OVERBOUGHT", "BEARISH"]:
+                        short_reasons.append("10m ST-")
+                if bb_10m_signal in ["OVERBOUGHT", "BEARISH"]:
                     short_confirmations += 1
                 
-                # RSI confirmation
-                if rsi_5m > 65:
+                # ============== ADVANCED SHORT CONFIRMATIONS ==============
+                # ADX - Strong bearish trend
+                if adx_value >= 25 and adx_direction == "BEARISH" and minus_di > plus_di:
                     short_confirmations += 1
-                    short_reasons.append(f"RSI {rsi_5m:.0f}")
+                    short_reasons.append(f"ADX Strong {adx_value:.0f}")
                 
-                # Volume confirmation
-                if volume_ratio > 1.5:
+                # ROC - Bearish momentum or bearish divergence
+                if roc_signal == "BEARISH" and not roc_weakening:
                     short_confirmations += 1
-                    short_reasons.append(f"Vol {volume_ratio:.1f}x")
+                    short_reasons.append("ROC-")
+                if roc_bearish_divergence:
+                    short_confirmations += 2  # Divergence is strong signal
+                    short_reasons.append("🔥 ROC Bear Divergence")
+                
+                # BB Squeeze - Breakout potential (for shorts)
+                if bb_squeeze and st_5m_signal == "BEARISH":
+                    short_confirmations += 1
+                    short_reasons.append("🎯 BB Squeeze")
+                
+                # BB Curling down from upper band (reversal from overbought)
+                if bb_curling_down:
+                    short_confirmations += 1
+                    short_reasons.append("BB Curl Down")
+                
+                # VWAP Overextended UP = Rubber band snap DOWN (mean reversion short)
+                if vwap_overextended_up and st_5m_signal == "BEARISH":
+                    short_confirmations += 1
+                    short_reasons.append("🎯 VWAP Snap")
+                
+                # ============== SHORT WARNINGS (RISK FACTORS) ==============
+                # ADX weakening while bearish = downtrend fading
+                if adx_weakening and adx_direction == "BEARISH":
+                    short_warnings.append("⚠️ ADX Weakening")
+                    short_confirmations -= 1
+                
+                # ROC bullish divergence = price falling but momentum rising
+                if roc_bullish_divergence:
+                    short_warnings.append("⚠️ ROC Divergence")
+                    short_confirmations -= 2
+                
+                # BB Walking lower band = may be exhausted
+                if bb_walking_lower and bb_curling_up:
+                    short_warnings.append("⚠️ BB Curl Up")
+                    short_confirmations -= 1
+                
+                # VWAP overextended DOWN = too stretched, may snap back up
+                if vwap_overextended_down or vwap_extreme_down:
+                    short_warnings.append("⚠️ VWAP Stretched")
+                    short_confirmations -= 1
                 
                 # ============== SIGNAL GENERATION ==============
-                # Need at least 5 confirmations for a signal
-                min_confirmations = 5
+                # Need at least 4 confirmations for a signal (relaxed for more signals)
+                min_confirmations = 4
                 
                 signal_data = {
                     "symbol": symbol,
@@ -3171,26 +3565,50 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     "bb_5m_lower": round(bb_5m_lower, 2),
                     "bb_5m_middle": round(bb_5m_middle, 2),
                     "bb_5m_squeeze": bb_5m_squeeze,
-                    # 15m indicators
-                    "vwap_15m": round(vwap_15m, 2),
-                    "vwap_15m_signal": vwap_15m_signal,
-                    "st_15m_signal": st_15m_signal,
-                    "st_15m_value": round(st_15m_value, 2),
-                    "st_15m_crossover": st_15m_crossover,
-                    "bb_15m_signal": bb_15m_signal,
-                    "bb_15m_squeeze": bb_15m_squeeze,
+                    # 10m indicators
+                    "vwap_10m": round(vwap_10m, 2),
+                    "vwap_10m_signal": vwap_10m_signal,
+                    "st_10m_signal": st_10m_signal,
+                    "st_10m_value": round(st_10m_value, 2),
+                    "st_10m_crossover": st_10m_crossover,
+                    "bb_10m_signal": bb_10m_signal,
+                    "bb_10m_squeeze": bb_10m_squeeze,
                     # Other
                     "rsi_5m": round(rsi_5m, 1),
-                    "rsi_15m": round(rsi_15m, 1),
+                    "rsi_10m": round(rsi_10m, 1),
                     "volume_ratio": round(volume_ratio, 2),
-                    "atr_pct": round(atr_pct, 2)
+                    "atr_pct": round(atr_pct, 2),
+                    # ADVANCED INDICATORS
+                    "adx": round(adx_value, 1),
+                    "adx_strength": adx_trend_strength,
+                    "adx_direction": adx_direction,
+                    "adx_weakening": adx_weakening,
+                    "plus_di": round(plus_di, 1),
+                    "minus_di": round(minus_di, 1),
+                    "roc": round(roc_value, 2),
+                    "roc_signal": roc_signal,
+                    "roc_bearish_div": roc_bearish_divergence,
+                    "roc_bullish_div": roc_bullish_divergence,
+                    "roc_weakening": roc_weakening,
+                    "bb_squeeze": bb_squeeze,
+                    "bb_walking_upper": bb_walking_upper,
+                    "bb_walking_lower": bb_walking_lower,
+                    "bb_curling_down": bb_curling_down,
+                    "bb_curling_up": bb_curling_up,
+                    "bb_percent_b": round(bb_percent_b, 1),
+                    "vwap_overextended_up": vwap_overextended_up,
+                    "vwap_overextended_down": vwap_overextended_down,
+                    "vwap_extreme_up": vwap_extreme_up,
+                    "vwap_extreme_down": vwap_extreme_down
                 }
                 
                 if long_confirmations >= min_confirmations and long_confirmations > short_confirmations:
                     signal_data["signal"] = "LONG"
                     signal_data["confirmations"] = long_confirmations
-                    signal_data["reasons"] = long_reasons[:5]
-                    signal_data["reason_text"] = " | ".join(long_reasons[:4])
+                    signal_data["reasons"] = long_reasons[:6]
+                    signal_data["reason_text"] = " | ".join(long_reasons[:5])
+                    signal_data["warnings"] = long_warnings
+                    signal_data["warning_text"] = " | ".join(long_warnings) if long_warnings else ""
                     
                     # Confidence based on confirmations
                     if long_confirmations >= 8:
@@ -3234,13 +3652,29 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     signal_data["reward_pct"] = round(((target1 - entry) / entry) * 100, 2)
                     signal_data["risk_reward"] = round(signal_data["reward_pct"] / signal_data["risk_pct"], 1) if signal_data["risk_pct"] > 0 else 1.5
                     
-                    long_signals.append(signal_data)
+                    # Calculate profit potential (distance to target as %)
+                    profit_potential_t1 = ((target1 - ltp) / ltp) * 100
+                    profit_potential_t2 = ((target2 - ltp) / ltp) * 100
+                    signal_data["profit_potential"] = round(profit_potential_t1, 2)
+                    signal_data["profit_potential_t2"] = round(profit_potential_t2, 2)
+                    
+                    # Check if target is nearly achieved (within 0.3% of T1)
+                    target_nearly_achieved = profit_potential_t1 <= 0.3
+                    signal_data["target_status"] = "🎯 ACHIEVED" if profit_potential_t1 <= 0 else "⏳ NEAR" if target_nearly_achieved else "🚀 ACTIVE"
+                    
+                    # Only add signals with profit potential remaining
+                    if profit_potential_t1 > 0.3:
+                        long_signals.append(signal_data)
+                    else:
+                        logger.info(f"LONG {symbol}: Target nearly achieved ({profit_potential_t1:.2f}% to T1), skipping")
                     
                 elif short_confirmations >= min_confirmations and short_confirmations > long_confirmations:
                     signal_data["signal"] = "SHORT"
                     signal_data["confirmations"] = short_confirmations
-                    signal_data["reasons"] = short_reasons[:5]
-                    signal_data["reason_text"] = " | ".join(short_reasons[:4])
+                    signal_data["reasons"] = short_reasons[:6]
+                    signal_data["reason_text"] = " | ".join(short_reasons[:5])
+                    signal_data["warnings"] = short_warnings
+                    signal_data["warning_text"] = " | ".join(short_warnings) if short_warnings else ""
                     
                     # Confidence based on confirmations
                     if short_confirmations >= 8:
@@ -3284,17 +3718,34 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     signal_data["reward_pct"] = round(((entry - target1) / entry) * 100, 2)
                     signal_data["risk_reward"] = round(signal_data["reward_pct"] / signal_data["risk_pct"], 1) if signal_data["risk_pct"] > 0 else 1.5
                     
-                    short_signals.append(signal_data)
+                    # Calculate profit potential (distance to target as %) - For shorts, target is below
+                    profit_potential_t1 = ((ltp - target1) / ltp) * 100
+                    profit_potential_t2 = ((ltp - target2) / ltp) * 100
+                    signal_data["profit_potential"] = round(profit_potential_t1, 2)
+                    signal_data["profit_potential_t2"] = round(profit_potential_t2, 2)
+                    
+                    # Check if target is nearly achieved (within 0.3% of T1)
+                    target_nearly_achieved = profit_potential_t1 <= 0.3
+                    signal_data["target_status"] = "🎯 ACHIEVED" if profit_potential_t1 <= 0 else "⏳ NEAR" if target_nearly_achieved else "🚀 ACTIVE"
+                    
+                    # Only add signals with profit potential remaining
+                    if profit_potential_t1 > 0.3:
+                        short_signals.append(signal_data)
+                    else:
+                        logger.info(f"SHORT {symbol}: Target nearly achieved ({profit_potential_t1:.2f}% to T1), skipping")
                     
             except Exception as e:
                 logger.debug(f"Error analyzing {symbol} for multi-TF: {e}")
                 continue
         
-        # Sort by confirmations (strongest signals first)
-        long_signals.sort(key=lambda x: x["confirmations"], reverse=True)
-        short_signals.sort(key=lambda x: x["confirmations"], reverse=True)
+        # Sort by profit potential first, then confirmations (bigger profits + stronger signals first)
+        # Score = profit_potential * 2 + confirmations (weight profit potential more)
+        long_signals.sort(key=lambda x: (x.get("profit_potential", 0) * 2 + x["confirmations"]), reverse=True)
+        short_signals.sort(key=lambda x: (x.get("profit_potential", 0) * 2 + x["confirmations"]), reverse=True)
         
-        logger.info(f"Multi-TF: Found {len(long_signals)} LONG, {len(short_signals)} SHORT signals")
+        # Count filtered signals
+        total_before_filter = stocks_analyzed
+        logger.info(f"Multi-TF: Found {len(long_signals)} LONG, {len(short_signals)} SHORT signals (filtered for profit potential)")
         
         return {
             "status": "success",

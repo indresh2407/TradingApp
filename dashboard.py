@@ -1276,29 +1276,43 @@ def show_dashboard(state):
 def show_intraday_strategy(state):
     """Multi-Timeframe DayTrade Strategy with VWAP, Supertrend, Bollinger Bands"""
     st.title("⚡ DayTrade Strategy")
-    st.markdown("**Multi-Timeframe Confirmation** using VWAP, Supertrend & Bollinger Bands on 5m and 15m charts")
+    st.markdown("**Multi-Timeframe Confirmation** using VWAP, Supertrend & Bollinger Bands on 5m and 10m charts")
     
     # Strategy explanation
     with st.expander("📖 Strategy Explained", expanded=False):
         st.markdown("""
-        **This strategy confirms trades across multiple timeframes:**
+        **Core Multi-Timeframe Indicators:**
         
-        | Indicator | 5-Minute | 15-Minute | Purpose |
+        | Indicator | 5-Minute | 10-Minute | Purpose |
         |-----------|----------|-----------|---------|
         | **VWAP** | Entry timing | Trend bias | Price vs Volume-weighted average |
         | **Supertrend** | Entry signal | Trend confirmation | Dynamic support/resistance |
         | **Bollinger Bands** | Overbought/Oversold | Volatility squeeze | Mean reversion + breakout |
         
+        ---
+        
+        **🆕 Advanced Predictive Indicators:**
+        
+        | Indicator | Signal | Purpose |
+        |-----------|--------|---------|
+        | **ADX** | Trend weakening | When ADX > 25 but falling, trend is fading - prepare for reversal |
+        | **ROC (Rate of Change)** | Momentum divergence | Price making highs but ROC falling = bearish divergence |
+        | **BB Squeeze** | Breakout coming | Bands narrowing = volatility compression, big move incoming |
+        | **BB Walk & Curl** | Reversal warning | Price stops touching outer band & curls = reversal starting |
+        | **VWAP Distance** | Rubber band effect | Price at 2nd/3rd StdDev from VWAP = overextended, will snap back |
+        
+        ---
+        
         **Signal Requirements:**
-        - Minimum **5 confirmations** across indicators and timeframes
-        - Both 5m and 15m must align in direction
-        - RSI and Volume provide additional confirmation
+        - Minimum **4 confirmations** across indicators
+        - Advanced signals can ADD or SUBTRACT confirmations
+        - Warnings shown when risk factors detected
         
         **Confidence Levels:**
         - 🔥🔥🔥 VERY HIGH (8+ confirmations)
-        - 🔥🔥 HIGH (7 confirmations)
+        - 🔥🔥 HIGH (7 confirmations)  
         - 🔥 GOOD (6 confirmations)
-        - ⚡ MODERATE (5 confirmations)
+        - ⚡ MODERATE (4-5 confirmations)
         """)
     
     # Index selector
@@ -1364,7 +1378,7 @@ def show_intraday_strategy(state):
         if st.session_state.intraday_index == "FULL MARKET":
             spinner_msg = "🌐 Scanning 500+ stocks with multi-timeframe analysis..."
         else:
-            spinner_msg = f"⚡ Analyzing {st.session_state.intraday_index} on 5m & 15m timeframes..."
+            spinner_msg = f"⚡ Analyzing {st.session_state.intraday_index} on 5m & 10m timeframes..."
         
         with st.spinner(spinner_msg):
             st.session_state.intraday_data = get_multi_timeframe_signals(
@@ -1444,114 +1458,99 @@ def show_intraday_strategy(state):
                         symbol = sig["symbol"]
                         ltp = sig["ltp"]
                         change_pct = sig["change_pct"]
-                        confirmations = sig["confirmations"]
-                        confidence = sig.get("confidence", "MODERATE")
                         confidence_pct = sig.get("confidence_pct", 60)
                         reasons = sig.get("reason_text", "")
+                        warnings = sig.get("warning_text", "")
                         
                         entry = sig.get("entry", ltp)
                         stoploss = sig.get("stoploss", ltp * 0.99)
                         target1 = sig.get("target1", ltp * 1.01)
                         target2 = sig.get("target2", ltp * 1.02)
-                        reward_pct = sig.get("reward_pct", 1)
-                        risk_pct = sig.get("risk_pct", 0.5)
-                        rr = sig.get("risk_reward", 2)
                         
-                        # Indicators
+                        # Get indicator signals
                         vwap_5m = sig.get("vwap_5m_signal", "N/A")
                         st_5m = sig.get("st_5m_signal", "N/A")
                         bb_5m = sig.get("bb_5m_signal", "N/A")
-                        vwap_15m = sig.get("vwap_15m_signal", "N/A")
-                        st_15m = sig.get("st_15m_signal", "N/A")
-                        bb_15m = sig.get("bb_15m_signal", "N/A")
+                        vwap_10m = sig.get("vwap_10m_signal", "N/A")
+                        st_10m = sig.get("st_10m_signal", "N/A")
+                        bb_10m = sig.get("bb_10m_signal", "N/A")
                         
-                        # Confidence badge
-                        if confidence == "VERY HIGH":
-                            conf_badge = "🔥🔥🔥"
-                            conf_color = "#22c55e"
-                        elif confidence == "HIGH":
-                            conf_badge = "🔥🔥"
-                            conf_color = "#84cc16"
-                        elif confidence == "GOOD":
-                            conf_badge = "🔥"
-                            conf_color = "#eab308"
-                        else:
-                            conf_badge = "⚡"
-                            conf_color = "#f59e0b"
+                        # Get advanced indicators
+                        adx = sig.get("adx", 0)
+                        adx_strength = sig.get("adx_strength", "N/A")
+                        roc = sig.get("roc", 0)
+                        roc_signal = sig.get("roc_signal", "N/A")
+                        bb_squeeze = sig.get("bb_squeeze", False)
+                        bb_curling = sig.get("bb_curling_up", False)
+                        vwap_overext = sig.get("vwap_overextended_down", False)
+                        roc_div = sig.get("roc_bullish_div", False)
                         
-                        change_color = "#4ade80" if change_pct >= 0 else "#f87171"
+                        # Get profit potential
+                        profit_potential = sig.get("profit_potential", 0)
+                        target_status = sig.get("target_status", "🚀 ACTIVE")
                         
-                        st.markdown(f"""
-                        <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); 
-                                    padding: 15px; border-radius: 12px; margin-bottom: 15px; 
-                                    border-left: 4px solid #22c55e;">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span style="font-weight: bold; color: white; font-size: 1.3em;">📈 {symbol}</span>
-                                <div>
-                                    <span style="background: {conf_color}33; color: {conf_color}; padding: 4px 10px; border-radius: 15px; font-size: 0.85em; font-weight: bold;">{conf_badge} {confidence_pct}%</span>
-                                </div>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin: 8px 0;">
-                                <span style="color: white; font-size: 1.1em;">₹{ltp:,.2f}</span>
-                                <span style="color: {change_color};">{change_pct:+.2f}% today</span>
-                            </div>
+                        # Display card using native Streamlit
+                        with st.container():
+                            st.markdown(f"**📈 {symbol}** | ₹{ltp:,.2f} | {change_pct:+.2f}% | 🔥 {confidence_pct}%")
+                            st.markdown(f"**💰 Profit Potential: {profit_potential:+.2f}%** | {target_status}")
                             
-                            <!-- Timeframe Indicators -->
-                            <div style="background: #0f172a; padding: 10px; border-radius: 8px; margin: 10px 0;">
-                                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; text-align: center; font-size: 0.75em;">
-                                    <div style="color: #64748b;">Indicator</div>
-                                    <div style="color: #64748b;">5-Min</div>
-                                    <div style="color: #64748b;">15-Min</div>
-                                    
-                                    <div style="color: #94a3b8;">VWAP</div>
-                                    <div style="color: {'#22c55e' if vwap_5m == 'BULLISH' else '#ef4444' if vwap_5m == 'BEARISH' else '#f59e0b'};">{'✅' if vwap_5m == 'BULLISH' else '❌' if vwap_5m == 'BEARISH' else '➖'}</div>
-                                    <div style="color: {'#22c55e' if vwap_15m == 'BULLISH' else '#ef4444' if vwap_15m == 'BEARISH' else '#f59e0b'};">{'✅' if vwap_15m == 'BULLISH' else '❌' if vwap_15m == 'BEARISH' else '➖'}</div>
-                                    
-                                    <div style="color: #94a3b8;">Supertrend</div>
-                                    <div style="color: {'#22c55e' if st_5m == 'BULLISH' else '#ef4444' if st_5m == 'BEARISH' else '#f59e0b'};">{'✅' if st_5m == 'BULLISH' else '❌' if st_5m == 'BEARISH' else '➖'}</div>
-                                    <div style="color: {'#22c55e' if st_15m == 'BULLISH' else '#ef4444' if st_15m == 'BEARISH' else '#f59e0b'};">{'✅' if st_15m == 'BULLISH' else '❌' if st_15m == 'BEARISH' else '➖'}</div>
-                                    
-                                    <div style="color: #94a3b8;">Bollinger</div>
-                                    <div style="color: {'#22c55e' if bb_5m in ['BULLISH', 'OVERSOLD'] else '#ef4444' if bb_5m in ['BEARISH', 'OVERBOUGHT'] else '#f59e0b'};">{'✅' if bb_5m in ['BULLISH', 'OVERSOLD'] else '❌' if bb_5m in ['BEARISH', 'OVERBOUGHT'] else '➖'}</div>
-                                    <div style="color: {'#22c55e' if bb_15m in ['BULLISH', 'OVERSOLD'] else '#ef4444' if bb_15m in ['BEARISH', 'OVERBOUGHT'] else '#f59e0b'};">{'✅' if bb_15m in ['BULLISH', 'OVERSOLD'] else '❌' if bb_15m in ['BEARISH', 'OVERBOUGHT'] else '➖'}</div>
-                                </div>
-                            </div>
+                            # Show reasons
+                            if reasons:
+                                st.caption(f"✅ {reasons}")
                             
-                            <div style="color: #94a3b8; font-size: 0.8em; margin: 8px 0;">{reasons}</div>
+                            # Show warnings if any
+                            if warnings:
+                                st.warning(warnings)
                             
-                            <!-- Trading Levels -->
-                            <div style="background: #0f172a; padding: 10px; border-radius: 8px; margin-top: 10px;">
-                                <div style="color: #22c55e; font-size: 0.85em; font-weight: bold; margin-bottom: 8px;">
-                                    📋 Trade Plan: BUY
-                                </div>
-                                <div style="display: flex; justify-content: space-between; font-size: 0.9em;">
-                                    <div>
-                                        <span style="color: #64748b;">Entry:</span>
-                                        <span style="color: white; font-weight: bold;"> ₹{entry:,.0f}</span>
-                                    </div>
-                                    <div>
-                                        <span style="color: #64748b;">SL:</span>
-                                        <span style="color: #ef4444; font-weight: bold;"> ₹{stoploss:,.0f}</span>
-                                    </div>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; font-size: 0.9em; margin-top: 5px;">
-                                    <div>
-                                        <span style="color: #64748b;">T1:</span>
-                                        <span style="color: #22c55e; font-weight: bold;"> ₹{target1:,.0f}</span>
-                                    </div>
-                                    <div>
-                                        <span style="color: #64748b;">T2:</span>
-                                        <span style="color: #22c55e; font-weight: bold;"> ₹{target2:,.0f}</span>
-                                    </div>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.85em; padding-top: 8px; border-top: 1px solid #334155;">
-                                    <span style="color: #ef4444;">Risk: -{risk_pct:.1f}%</span>
-                                    <span style="color: #22c55e;">Reward: +{reward_pct:.1f}%</span>
-                                    <span style="color: #60a5fa; font-weight: bold;">R:R = 1:{rr:.1f}</span>
-                                </div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                            # Indicator table using columns
+                            col1, col2, col3 = st.columns(3)
+                            col1.write("**Indicator**")
+                            col2.write("**5-Min**")
+                            col3.write("**10-Min**")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            col1.write("VWAP")
+                            col2.write("✅" if vwap_5m == "BULLISH" else "❌" if vwap_5m == "BEARISH" else "➖")
+                            col3.write("✅" if vwap_10m == "BULLISH" else "❌" if vwap_10m == "BEARISH" else "➖")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            col1.write("Supertrend")
+                            col2.write("✅" if st_5m == "BULLISH" else "❌" if st_5m == "BEARISH" else "➖")
+                            col3.write("✅" if st_10m == "BULLISH" else "❌" if st_10m == "BEARISH" else "➖")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            col1.write("Bollinger")
+                            col2.write("✅" if bb_5m in ["BULLISH", "OVERSOLD"] else "❌" if bb_5m in ["BEARISH", "OVERBOUGHT"] else "➖")
+                            col3.write("✅" if bb_10m in ["BULLISH", "OVERSOLD"] else "❌" if bb_10m in ["BEARISH", "OVERBOUGHT"] else "➖")
+                            
+                            # Advanced indicators row
+                            st.markdown("**Advanced:**")
+                            adv1, adv2, adv3, adv4 = st.columns(4)
+                            
+                            # ADX
+                            adx_icon = "🟢" if adx >= 25 else "🟡" if adx >= 20 else "🔴"
+                            adv1.metric("ADX", f"{adx:.0f}", adx_strength[:4] if len(adx_strength) > 4 else adx_strength)
+                            
+                            # ROC
+                            roc_icon = "✅" if roc_signal == "BULLISH" else "❌" if roc_signal == "BEARISH" else "➖"
+                            adv2.metric("ROC", f"{roc:+.1f}%", roc_icon)
+                            
+                            # BB Status
+                            bb_status = "🎯 Squeeze" if bb_squeeze else "↗️ Curl" if bb_curling else "➖"
+                            adv3.write(f"**BB:** {bb_status}")
+                            
+                            # Special signals
+                            special = []
+                            if vwap_overext:
+                                special.append("🎯 VWAP Snap")
+                            if roc_div:
+                                special.append("🔥 Divergence")
+                            if bb_squeeze:
+                                special.append("💥 Breakout")
+                            adv4.write(" ".join(special) if special else "➖")
+                            
+                            st.caption(f"📋 BUY: Entry ₹{entry:,.0f} | SL ₹{stoploss:,.0f} | T1 ₹{target1:,.0f} | T2 ₹{target2:,.0f}")
+                            st.markdown("---")
                     except Exception as e:
                         st.error(f"Error: {e}")
             else:
@@ -1569,114 +1568,99 @@ def show_intraday_strategy(state):
                         symbol = sig["symbol"]
                         ltp = sig["ltp"]
                         change_pct = sig["change_pct"]
-                        confirmations = sig["confirmations"]
-                        confidence = sig.get("confidence", "MODERATE")
                         confidence_pct = sig.get("confidence_pct", 60)
                         reasons = sig.get("reason_text", "")
+                        warnings = sig.get("warning_text", "")
                         
                         entry = sig.get("entry", ltp)
                         stoploss = sig.get("stoploss", ltp * 1.01)
                         target1 = sig.get("target1", ltp * 0.99)
                         target2 = sig.get("target2", ltp * 0.98)
-                        reward_pct = sig.get("reward_pct", 1)
-                        risk_pct = sig.get("risk_pct", 0.5)
-                        rr = sig.get("risk_reward", 2)
                         
-                        # Indicators
+                        # Get indicator signals
                         vwap_5m = sig.get("vwap_5m_signal", "N/A")
                         st_5m = sig.get("st_5m_signal", "N/A")
                         bb_5m = sig.get("bb_5m_signal", "N/A")
-                        vwap_15m = sig.get("vwap_15m_signal", "N/A")
-                        st_15m = sig.get("st_15m_signal", "N/A")
-                        bb_15m = sig.get("bb_15m_signal", "N/A")
+                        vwap_10m = sig.get("vwap_10m_signal", "N/A")
+                        st_10m = sig.get("st_10m_signal", "N/A")
+                        bb_10m = sig.get("bb_10m_signal", "N/A")
                         
-                        # Confidence badge
-                        if confidence == "VERY HIGH":
-                            conf_badge = "🔥🔥🔥"
-                            conf_color = "#22c55e"
-                        elif confidence == "HIGH":
-                            conf_badge = "🔥🔥"
-                            conf_color = "#84cc16"
-                        elif confidence == "GOOD":
-                            conf_badge = "🔥"
-                            conf_color = "#eab308"
-                        else:
-                            conf_badge = "⚡"
-                            conf_color = "#f59e0b"
+                        # Get advanced indicators
+                        adx = sig.get("adx", 0)
+                        adx_strength = sig.get("adx_strength", "N/A")
+                        roc = sig.get("roc", 0)
+                        roc_signal = sig.get("roc_signal", "N/A")
+                        bb_squeeze = sig.get("bb_squeeze", False)
+                        bb_curling = sig.get("bb_curling_down", False)
+                        vwap_overext = sig.get("vwap_overextended_up", False)
+                        roc_div = sig.get("roc_bearish_div", False)
                         
-                        change_color = "#4ade80" if change_pct >= 0 else "#f87171"
+                        # Get profit potential
+                        profit_potential = sig.get("profit_potential", 0)
+                        target_status = sig.get("target_status", "🚀 ACTIVE")
                         
-                        st.markdown(f"""
-                        <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); 
-                                    padding: 15px; border-radius: 12px; margin-bottom: 15px; 
-                                    border-left: 4px solid #ef4444;">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span style="font-weight: bold; color: white; font-size: 1.3em;">📉 {symbol}</span>
-                                <div>
-                                    <span style="background: {conf_color}33; color: {conf_color}; padding: 4px 10px; border-radius: 15px; font-size: 0.85em; font-weight: bold;">{conf_badge} {confidence_pct}%</span>
-                                </div>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin: 8px 0;">
-                                <span style="color: white; font-size: 1.1em;">₹{ltp:,.2f}</span>
-                                <span style="color: {change_color};">{change_pct:+.2f}% today</span>
-                            </div>
+                        # Display card using native Streamlit
+                        with st.container():
+                            st.markdown(f"**📉 {symbol}** | ₹{ltp:,.2f} | {change_pct:+.2f}% | 🔥 {confidence_pct}%")
+                            st.markdown(f"**💰 Profit Potential: {profit_potential:+.2f}%** | {target_status}")
                             
-                            <!-- Timeframe Indicators -->
-                            <div style="background: #0f172a; padding: 10px; border-radius: 8px; margin: 10px 0;">
-                                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; text-align: center; font-size: 0.75em;">
-                                    <div style="color: #64748b;">Indicator</div>
-                                    <div style="color: #64748b;">5-Min</div>
-                                    <div style="color: #64748b;">15-Min</div>
-                                    
-                                    <div style="color: #94a3b8;">VWAP</div>
-                                    <div style="color: {'#ef4444' if vwap_5m == 'BEARISH' else '#22c55e' if vwap_5m == 'BULLISH' else '#f59e0b'};">{'✅' if vwap_5m == 'BEARISH' else '❌' if vwap_5m == 'BULLISH' else '➖'}</div>
-                                    <div style="color: {'#ef4444' if vwap_15m == 'BEARISH' else '#22c55e' if vwap_15m == 'BULLISH' else '#f59e0b'};">{'✅' if vwap_15m == 'BEARISH' else '❌' if vwap_15m == 'BULLISH' else '➖'}</div>
-                                    
-                                    <div style="color: #94a3b8;">Supertrend</div>
-                                    <div style="color: {'#ef4444' if st_5m == 'BEARISH' else '#22c55e' if st_5m == 'BULLISH' else '#f59e0b'};">{'✅' if st_5m == 'BEARISH' else '❌' if st_5m == 'BULLISH' else '➖'}</div>
-                                    <div style="color: {'#ef4444' if st_15m == 'BEARISH' else '#22c55e' if st_15m == 'BULLISH' else '#f59e0b'};">{'✅' if st_15m == 'BEARISH' else '❌' if st_15m == 'BULLISH' else '➖'}</div>
-                                    
-                                    <div style="color: #94a3b8;">Bollinger</div>
-                                    <div style="color: {'#ef4444' if bb_5m in ['BEARISH', 'OVERBOUGHT'] else '#22c55e' if bb_5m in ['BULLISH', 'OVERSOLD'] else '#f59e0b'};">{'✅' if bb_5m in ['BEARISH', 'OVERBOUGHT'] else '❌' if bb_5m in ['BULLISH', 'OVERSOLD'] else '➖'}</div>
-                                    <div style="color: {'#ef4444' if bb_15m in ['BEARISH', 'OVERBOUGHT'] else '#22c55e' if bb_15m in ['BULLISH', 'OVERSOLD'] else '#f59e0b'};">{'✅' if bb_15m in ['BEARISH', 'OVERBOUGHT'] else '❌' if bb_15m in ['BULLISH', 'OVERSOLD'] else '➖'}</div>
-                                </div>
-                            </div>
+                            # Show reasons
+                            if reasons:
+                                st.caption(f"✅ {reasons}")
                             
-                            <div style="color: #94a3b8; font-size: 0.8em; margin: 8px 0;">{reasons}</div>
+                            # Show warnings if any
+                            if warnings:
+                                st.warning(warnings)
                             
-                            <!-- Trading Levels -->
-                            <div style="background: #0f172a; padding: 10px; border-radius: 8px; margin-top: 10px;">
-                                <div style="color: #ef4444; font-size: 0.85em; font-weight: bold; margin-bottom: 8px;">
-                                    📋 Trade Plan: SELL
-                                </div>
-                                <div style="display: flex; justify-content: space-between; font-size: 0.9em;">
-                                    <div>
-                                        <span style="color: #64748b;">Entry:</span>
-                                        <span style="color: white; font-weight: bold;"> ₹{entry:,.0f}</span>
-                                    </div>
-                                    <div>
-                                        <span style="color: #64748b;">SL:</span>
-                                        <span style="color: #ef4444; font-weight: bold;"> ₹{stoploss:,.0f}</span>
-                                    </div>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; font-size: 0.9em; margin-top: 5px;">
-                                    <div>
-                                        <span style="color: #64748b;">T1:</span>
-                                        <span style="color: #22c55e; font-weight: bold;"> ₹{target1:,.0f}</span>
-                                    </div>
-                                    <div>
-                                        <span style="color: #64748b;">T2:</span>
-                                        <span style="color: #22c55e; font-weight: bold;"> ₹{target2:,.0f}</span>
-                                    </div>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.85em; padding-top: 8px; border-top: 1px solid #334155;">
-                                    <span style="color: #ef4444;">Risk: -{risk_pct:.1f}%</span>
-                                    <span style="color: #22c55e;">Reward: +{reward_pct:.1f}%</span>
-                                    <span style="color: #60a5fa; font-weight: bold;">R:R = 1:{rr:.1f}</span>
-                                </div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                            # Indicator table using columns (for SHORT, bearish is good)
+                            col1, col2, col3 = st.columns(3)
+                            col1.write("**Indicator**")
+                            col2.write("**5-Min**")
+                            col3.write("**10-Min**")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            col1.write("VWAP")
+                            col2.write("✅" if vwap_5m == "BEARISH" else "❌" if vwap_5m == "BULLISH" else "➖")
+                            col3.write("✅" if vwap_10m == "BEARISH" else "❌" if vwap_10m == "BULLISH" else "➖")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            col1.write("Supertrend")
+                            col2.write("✅" if st_5m == "BEARISH" else "❌" if st_5m == "BULLISH" else "➖")
+                            col3.write("✅" if st_10m == "BEARISH" else "❌" if st_10m == "BULLISH" else "➖")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            col1.write("Bollinger")
+                            col2.write("✅" if bb_5m in ["BEARISH", "OVERBOUGHT"] else "❌" if bb_5m in ["BULLISH", "OVERSOLD"] else "➖")
+                            col3.write("✅" if bb_10m in ["BEARISH", "OVERBOUGHT"] else "❌" if bb_10m in ["BULLISH", "OVERSOLD"] else "➖")
+                            
+                            # Advanced indicators row
+                            st.markdown("**Advanced:**")
+                            adv1, adv2, adv3, adv4 = st.columns(4)
+                            
+                            # ADX
+                            adx_icon = "🟢" if adx >= 25 else "🟡" if adx >= 20 else "🔴"
+                            adv1.metric("ADX", f"{adx:.0f}", adx_strength[:4] if len(adx_strength) > 4 else adx_strength)
+                            
+                            # ROC
+                            roc_icon = "✅" if roc_signal == "BEARISH" else "❌" if roc_signal == "BULLISH" else "➖"
+                            adv2.metric("ROC", f"{roc:+.1f}%", roc_icon)
+                            
+                            # BB Status
+                            bb_status = "🎯 Squeeze" if bb_squeeze else "↘️ Curl" if bb_curling else "➖"
+                            adv3.write(f"**BB:** {bb_status}")
+                            
+                            # Special signals
+                            special = []
+                            if vwap_overext:
+                                special.append("🎯 VWAP Snap")
+                            if roc_div:
+                                special.append("🔥 Divergence")
+                            if bb_squeeze:
+                                special.append("💥 Breakout")
+                            adv4.write(" ".join(special) if special else "➖")
+                            
+                            st.caption(f"📋 SELL: Entry ₹{entry:,.0f} | SL ₹{stoploss:,.0f} | T1 ₹{target1:,.0f} | T2 ₹{target2:,.0f}")
+                            st.markdown("---")
                     except Exception as e:
                         st.error(f"Error: {e}")
             else:
