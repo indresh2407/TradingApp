@@ -1,20 +1,73 @@
 # SIDDHI - Intelligent Trading Platform
 
-A Python-based **stock analysis platform** with multi-timeframe analysis and intelligent stock recommendations. Get intraday tips, tomorrow's outlook, and DayTrade signals.
+A Python-based **stock analysis platform** with multi-timeframe analysis and intelligent stock recommendations. Get intraday tips, DayTrade signals, Options buying signals, and long-term picks.
 
 ## Features
 
-- **Intelligent Stock Analysis**: VWAP, Supertrend, Bollinger Bands, RSI, and more
-- **Multi-Timeframe Confirmation**: 5m, 15m timeframe analysis for high-confidence trades
+- **Intelligent Stock Analysis**: VWAP, Supertrend, Bollinger Bands, ADX, ROC, and more
+- **Multi-Timeframe Confirmation**: 5m + 15m timeframe analysis for high-confidence trades
 - **Intraday Tips**: Real-time BUY/SELL recommendations with entry, SL, targets
-- **DayTrade Strategy**: Multi-timeframe intraday signals
+- **DayTrade Strategy**: Advanced multi-timeframe intraday signals with BB Squeeze, VWAP distance
+- **Options Strategy**: F&O signals with strike recommendations and expiry-aware logic
 - **Tomorrow's Outlook**: Next-day stock picks based on EOD analysis
 - **Long-Term Picks**: Investment recommendations for 1 month to 5 years
 - **Full Market Scan**: Analyze 500+ stocks across all sectors
 - **Beautiful Dashboard**: Real-time Streamlit web interface
 - **Volatility Analysis**: Prioritizes high-volatility stocks for intraday
 
-## Prerequisites
+---
+
+## Quick Start (Analysis Only)
+
+**No Kotak account needed** - uses Yahoo Finance for market data.
+
+### Step 1: Clone Repository
+```bash
+git clone <your-repo-url>
+cd kotak-trading-system
+```
+
+### Step 2: Create Virtual Environment
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+> **Windows:** `venv\Scripts\activate`
+
+### Step 3: Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### Step 4: Run Dashboard
+```bash
+streamlit run dashboard.py
+```
+
+### Step 5: Open Browser
+Go to **http://localhost:8501**
+
+---
+
+## One-Liner Setup (Copy-Paste)
+
+```bash
+cd kotak-trading-system && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt && streamlit run dashboard.py
+```
+
+---
+
+## System Requirements
+
+| Requirement | Version |
+|-------------|---------|
+| Python | 3.9 or higher |
+| pip | Latest |
+| Internet | Required for live data |
+
+---
+
+## Full Setup (With Live Trading)
 
 ### 1. Kotak Securities Account
 
@@ -28,40 +81,13 @@ You need an active Kotak Securities trading account with API access enabled.
 4. Note down your **Consumer Key** and **Consumer Secret**
 5. Register for **TOTP** authentication using Google/Microsoft Authenticator
 
-### 3. System Requirements
-
-- Python 3.9 or higher
-- pip (Python package manager)
-- Git
-
-## Installation
-
-### 1. Clone or Download
-
-```bash
-cd kotak-trading-system
-```
-
-### 2. Create Virtual Environment
-
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-### 3. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Install Kotak Neo API Client
+### 3. Install Kotak Neo API Client
 
 ```bash
 pip install "git+https://github.com/Kotak-Neo/kotak-neo-api.git#egg=neo_api_client"
 ```
 
-### 5. Configure Credentials
+### 4. Configure Credentials
 
 ```bash
 cp config/.env.example config/.env
@@ -115,10 +141,20 @@ python main.py status
 | Tab | Description |
 |-----|-------------|
 | **Dashboard** | Intraday Tips with entry, SL, targets |
-| **⚡ DayTrade** | Multi-timeframe intraday signals |
+| **⚡ DayTrade** | Multi-timeframe intraday signals with advanced indicators |
+| **🎯 Options** | F&O BUY CALL/PUT signals with strike recommendations |
 | **🌅 Tomorrow** | Next day's intraday stock picks |
 | **📊 Long Term** | Investment picks for 1M to 5Y |
 | **⚙️ Settings** | Configuration options |
+
+### Options Strategy Features
+
+- **F&O Stock Filter**: Only liquid F&O stocks
+- **Strike Recommendation**: ATM/OTM suggestions
+- **Expiry-Aware**: Duration advice based on days to expiry
+- **Volatility Filter**: ATR ≥ 1.2% for good premium moves
+- **Multi-Timeframe**: 5m + 15m Supertrend confirmation
+- **Index Filters**: NIFTY 50, NIFTY BANK, NIFTY IT, etc.
 
 ## Trading Strategies
 
@@ -177,12 +213,24 @@ kotak-trading-system/
 
 ## Analysis Features
 
-1. **Multi-Timeframe Analysis**: 5m + 15m confirmation
-2. **VWAP + Supertrend**: Combined indicator strategy
-3. **Support/Resistance**: Key level detection
-4. **Volume Analysis**: Surge and accumulation patterns
-5. **Volatility Scoring**: ATR-based stock prioritization
-6. **Comprehensive Logging**: All analysis logged
+### Core Indicators
+| Indicator | Purpose |
+|-----------|---------|
+| **VWAP** | Institutional price level |
+| **Supertrend** | Trend direction & crossovers |
+| **Bollinger Bands** | Squeeze, Walk, Curl patterns |
+| **ADX (7,7)** | Trend strength |
+| **ROC/Momentum** | Divergence detection |
+| **ATR** | Volatility & target calculation |
+
+### Advanced Features
+1. **Multi-Timeframe Analysis**: 5m + 15m + 10m confirmation
+2. **VWAP Distance**: "Rubber Band" overextension detection
+3. **BB Squeeze Detection**: Breakout anticipation
+4. **Supertrend Crossovers**: +2 score boost for fresh signals
+5. **Dynamic Targets**: ATR-based realistic targets
+6. **Profit Potential Filter**: Prioritizes high-potential trades
+7. **Comprehensive Logging**: All analysis logged with loguru
 
 ## Troubleshooting
 
