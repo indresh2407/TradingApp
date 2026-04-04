@@ -269,9 +269,10 @@ def main():
     """, unsafe_allow_html=True)
         
     # Navigation at top using tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "📊 Dashboard", 
         "⚡ DayTrade",
+        "🎯 Options",
         "🔍 Analyzer",
         "🌅 Tomorrow",
         "📈 Long Term",
@@ -284,14 +285,16 @@ def main():
     with tab2:
         show_intraday_strategy(state)
     with tab3:
-        show_stock_analyzer(state)
+        show_options_strategy(state)
     with tab4:
-        show_tomorrow_outlook(state)
+        show_stock_analyzer(state)
     with tab5:
-        show_long_term(state)
+        show_tomorrow_outlook(state)
     with tab6:
-        show_settings(state)
+        show_long_term(state)
     with tab7:
+        show_settings(state)
+    with tab8:
         show_logs()
 
 
@@ -1675,6 +1678,351 @@ def show_intraday_strategy(state):
         st.error(f"Error: {data.get('error', 'Unknown error')}")
         if st.button("🔄 Try Again", key="retry_intraday", use_container_width=True):
             st.session_state.intraday_refresh = True
+            st.rerun()
+
+
+def show_options_strategy(state):
+    """Options Trading Strategy - F&O focused signals"""
+    st.title("🎯 Options Strategy")
+    st.markdown("**F&O Trading Signals** - Stocks best suited for Options with strike recommendations")
+    
+    # Strategy explanation
+    with st.expander("📖 Options Strategy Explained", expanded=False):
+        st.markdown("""
+        **Designed specifically for F&O trading:**
+        
+        | Feature | Description |
+        |---------|-------------|
+        | **Stock Filter** | Only F&O stocks with liquid options |
+        | **Volatility** | Minimum 1.2% ATR required (need movement) |
+        | **Targets** | Larger (1.5-2.5% ATR) for option premium gains |
+        | **Strike Selection** | ATM for normal, OTM on strong crossovers |
+        
+        ---
+        
+        **Signal Types:**
+        - 🟢 **BUY CALL** - Bullish signal, buy Call option
+        - 🔴 **BUY PUT** - Bearish signal, buy Put option
+        
+        **Key Indicators:**
+        - VWAP position & distance
+        - Supertrend (5m + 15m) with crossover detection
+        - ADX trend strength (>25 = strong trend)
+        - Bollinger Band squeeze (breakout potential)
+        - ROC momentum
+        
+        **Expiry Awareness:**
+        - Shows days to expiry
+        - Thursday = Expiry day warning
+        
+        **Strike Recommendations:**
+        - **ATM**: At-the-money for balanced risk/reward
+        - **OTM**: Out-of-money on strong momentum (higher reward)
+        """)
+    
+    # Expiry info bar
+    from datetime import datetime
+    today = datetime.now()
+    is_expiry_day = today.weekday() == 3
+    days_to_expiry = (3 - today.weekday()) % 7
+    if days_to_expiry == 0 and today.hour >= 15:
+        days_to_expiry = 7
+    
+    if is_expiry_day:
+        st.warning("⚠️ **EXPIRY DAY** - Avoid buying options, high theta decay!")
+    else:
+        expiry_color = "#22c55e" if days_to_expiry >= 3 else "#f59e0b" if days_to_expiry >= 1 else "#ef4444"
+        st.markdown(f"""
+        <div style="background: {expiry_color}20; padding: 10px 15px; border-radius: 8px; 
+                    border-left: 4px solid {expiry_color}; margin-bottom: 15px;">
+            <span style="color: {expiry_color}; font-weight: bold;">
+                📅 Days to Expiry: {days_to_expiry}
+            </span>
+            <span style="color: #9ca3af; margin-left: 15px;">
+                {'✅ Good for buying options' if days_to_expiry >= 2 else '⚠️ Consider shorter targets'}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Index selector
+    st.markdown("**Select Index/Sector:**")
+    
+    if "options_index" not in st.session_state:
+        st.session_state.options_index = "ALL F&O"
+    
+    # Row 1
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if st.button("ALL F&O", key="opt_all_fno", use_container_width=True,
+                    type="primary" if st.session_state.options_index == "ALL F&O" else "secondary"):
+            st.session_state.options_index = "ALL F&O"
+            st.session_state.options_refresh = True
+    with col2:
+        if st.button("NIFTY 50", key="opt_nifty50", use_container_width=True,
+                    type="primary" if st.session_state.options_index == "NIFTY 50" else "secondary"):
+            st.session_state.options_index = "NIFTY 50"
+            st.session_state.options_refresh = True
+    with col3:
+        if st.button("NIFTY 100", key="opt_nifty100", use_container_width=True,
+                    type="primary" if st.session_state.options_index == "NIFTY 100" else "secondary"):
+            st.session_state.options_index = "NIFTY 100"
+            st.session_state.options_refresh = True
+    with col4:
+        if st.button("NIFTY BANK", key="opt_niftybank", use_container_width=True,
+                    type="primary" if st.session_state.options_index == "NIFTY BANK" else "secondary"):
+            st.session_state.options_index = "NIFTY BANK"
+            st.session_state.options_refresh = True
+    
+    # Row 2
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if st.button("NIFTY IT", key="opt_niftyit", use_container_width=True,
+                    type="primary" if st.session_state.options_index == "NIFTY IT" else "secondary"):
+            st.session_state.options_index = "NIFTY IT"
+            st.session_state.options_refresh = True
+    with col2:
+        if st.button("NIFTY AUTO", key="opt_niftyauto", use_container_width=True,
+                    type="primary" if st.session_state.options_index == "NIFTY AUTO" else "secondary"):
+            st.session_state.options_index = "NIFTY AUTO"
+            st.session_state.options_refresh = True
+    with col3:
+        if st.button("NIFTY PHARMA", key="opt_niftypharma", use_container_width=True,
+                    type="primary" if st.session_state.options_index == "NIFTY PHARMA" else "secondary"):
+            st.session_state.options_index = "NIFTY PHARMA"
+            st.session_state.options_refresh = True
+    with col4:
+        if st.button("NIFTY METAL", key="opt_niftymetal", use_container_width=True,
+                    type="primary" if st.session_state.options_index == "NIFTY METAL" else "secondary"):
+            st.session_state.options_index = "NIFTY METAL"
+            st.session_state.options_refresh = True
+    
+    # Refresh button
+    if st.button("🔄 Refresh Signals", key="refresh_options", use_container_width=True):
+        st.session_state.options_refresh = True
+    
+    st.markdown("---")
+    
+    # Fetch data
+    if "options_data" not in st.session_state or st.session_state.get("options_refresh", False):
+        selected_index = st.session_state.options_index
+        with st.spinner(f"🎯 Scanning {selected_index} for options opportunities..."):
+            from src.api.stock_analyzer import get_options_signals
+            st.session_state.options_data = get_options_signals(
+                index_name=selected_index,
+                num_stocks=5
+            )
+            st.session_state.options_refresh = False
+    
+    data = st.session_state.options_data
+    
+    if data.get("status") == "success":
+        # Stats bar
+        selected_index = data.get('index', 'ALL F&O')
+        st.markdown(f"""
+        <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
+            <div style="background: #1e3a5f; padding: 8px 15px; border-radius: 8px;">
+                <span style="color: #93c5fd;">📊 Scanning:</span>
+                <span style="color: white; font-weight: bold; margin-left: 5px;">{selected_index}</span>
+                <span style="color: #9ca3af; margin-left: 5px;">({data.get('stocks_analyzed', 0)} stocks)</span>
+            </div>
+            <div style="background: #16532d; padding: 8px 15px; border-radius: 8px;">
+                <span style="color: #86efac;">🟢 CALL:</span>
+                <span style="color: white; font-weight: bold; margin-left: 5px;">{data.get('total_calls', 0)}</span>
+            </div>
+            <div style="background: #7f1d1d; padding: 8px 15px; border-radius: 8px;">
+                <span style="color: #fca5a5;">🔴 PUT:</span>
+                <span style="color: white; font-weight: bold; margin-left: 5px;">{data.get('total_puts', 0)}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Two columns for signals
+        call_col, put_col = st.columns(2)
+        
+        with call_col:
+            st.markdown("### 🟢 BUY CALL")
+            st.caption("Bullish setups - Buy Call options")
+            
+            call_signals = data.get("call_signals", [])
+            
+            if call_signals:
+                for sig in call_signals:
+                    # Get days to expiry for duration recommendation
+                    days_exp = data.get("days_to_expiry", 3)
+                    try:
+                        symbol = sig["symbol"]
+                        ltp = sig["ltp"]
+                        change_pct = sig["change_pct"]
+                        confidence_pct = sig.get("confidence_pct", 55)
+                        reasons = sig.get("reason_text", "")
+                        
+                        entry = sig.get("entry", ltp)
+                        stoploss = sig.get("stoploss", ltp * 0.98)
+                        target1 = sig.get("target1", ltp * 1.015)
+                        target2 = sig.get("target2", ltp * 1.025)
+                        
+                        strike = sig.get("recommended_strike", ltp)
+                        strike_type = sig.get("strike_type", "ATM")
+                        atr_pct = sig.get("atr_pct", 0)
+                        adx = sig.get("adx", 0)
+                        profit_potential = sig.get("profit_potential", 0)
+                        bb_squeeze = sig.get("bb_squeeze", False)
+                        st_crossover = sig.get("st_crossover", False)
+                        
+                        with st.container():
+                            # Header with confidence indicator
+                            confidence = sig.get("confidence", "LOW")
+                            conf_icon = "🟢" if confidence_pct >= 65 else "🟡" if confidence_pct >= 45 else "🔴"
+                            st.markdown(f"**📈 {symbol}** | ₹{ltp:,.2f} | {change_pct:+.2f}% | {conf_icon} {confidence_pct}% ({confidence})")
+                            
+                            # Strike recommendation
+                            strike_color = "#22c55e" if strike_type == "ATM" else "#3b82f6"
+                            st.markdown(f"**🎯 Strike: ₹{strike}** ({strike_type})")
+                            
+                            # Reasons
+                            if reasons:
+                                st.caption(f"✅ {reasons}")
+                            
+                            # Key metrics
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("ATR%", f"{atr_pct:.1f}%")
+                            col2.metric("ADX", f"{adx:.0f}")
+                            col3.metric("Potential", f"+{profit_potential:.1f}%")
+                            
+                            # Special badges
+                            badges = []
+                            if bb_squeeze:
+                                badges.append("🎯 Squeeze")
+                            if st_crossover:
+                                badges.append("🔥 Crossover")
+                            if adx >= 25:
+                                badges.append("💪 Strong Trend")
+                            if badges:
+                                st.markdown(" ".join(badges))
+                            
+                            # Trade plan with duration
+                            if days_exp >= 3:
+                                duration = "Weekly expiry OK"
+                            elif days_exp >= 1:
+                                duration = "Scalp only (1-2 hrs)"
+                            else:
+                                duration = "Avoid buying"
+                            
+                            st.caption(f"📋 Entry ₹{entry:,.0f} | SL ₹{stoploss:,.0f} | T1 ₹{target1:,.0f} | T2 ₹{target2:,.0f}")
+                            st.caption(f"⏱️ Duration: {duration} | Expiry in {days_exp} days")
+                            st.markdown("---")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            else:
+                # Show why no signals
+                filter_stats = data.get("filter_stats", {})
+                st.info(f"""
+                **No CALL signals found.**
+                
+                📊 Analysis: {data.get('stocks_analyzed', 0)} stocks scanned
+                - ❌ {filter_stats.get('no_data', 0)} stocks had no data
+                - 📉 {filter_stats.get('low_volatility', 0)} stocks had low ATR (<1.2%)
+                - ⚠️ {filter_stats.get('low_score', 0)} stocks had weak signals (score <5)
+                
+                *Try a different index or wait for better setups.*
+                """)
+        
+        with put_col:
+            st.markdown("### 🔴 BUY PUT")
+            st.caption("Bearish setups - Buy Put options")
+            
+            put_signals = data.get("put_signals", [])
+            
+            if put_signals:
+                for sig in put_signals:
+                    # Get days to expiry for duration recommendation
+                    days_exp = data.get("days_to_expiry", 3)
+                    try:
+                        symbol = sig["symbol"]
+                        ltp = sig["ltp"]
+                        change_pct = sig["change_pct"]
+                        confidence_pct = sig.get("confidence_pct", 55)
+                        reasons = sig.get("reason_text", "")
+                        
+                        entry = sig.get("entry", ltp)
+                        stoploss = sig.get("stoploss", ltp * 1.02)
+                        target1 = sig.get("target1", ltp * 0.985)
+                        target2 = sig.get("target2", ltp * 0.975)
+                        
+                        strike = sig.get("recommended_strike", ltp)
+                        strike_type = sig.get("strike_type", "ATM")
+                        atr_pct = sig.get("atr_pct", 0)
+                        adx = sig.get("adx", 0)
+                        profit_potential = sig.get("profit_potential", 0)
+                        bb_squeeze = sig.get("bb_squeeze", False)
+                        st_crossover = sig.get("st_crossover", False)
+                        
+                        with st.container():
+                            # Header with confidence indicator
+                            confidence = sig.get("confidence", "LOW")
+                            conf_icon = "🟢" if confidence_pct >= 65 else "🟡" if confidence_pct >= 45 else "🔴"
+                            st.markdown(f"**📉 {symbol}** | ₹{ltp:,.2f} | {change_pct:+.2f}% | {conf_icon} {confidence_pct}% ({confidence})")
+                            
+                            # Strike recommendation
+                            st.markdown(f"**🎯 Strike: ₹{strike}** ({strike_type})")
+                            
+                            # Reasons
+                            if reasons:
+                                st.caption(f"✅ {reasons}")
+                            
+                            # Key metrics
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("ATR%", f"{atr_pct:.1f}%")
+                            col2.metric("ADX", f"{adx:.0f}")
+                            col3.metric("Potential", f"+{profit_potential:.1f}%")
+                            
+                            # Special badges
+                            badges = []
+                            if bb_squeeze:
+                                badges.append("🎯 Squeeze")
+                            if st_crossover:
+                                badges.append("🔥 Crossover")
+                            if adx >= 25:
+                                badges.append("💪 Strong Trend")
+                            if badges:
+                                st.markdown(" ".join(badges))
+                            
+                            # Trade plan
+                            # Trade plan with duration
+                            if days_exp >= 3:
+                                duration = "Weekly expiry OK"
+                            elif days_exp >= 1:
+                                duration = "Scalp only (1-2 hrs)"
+                            else:
+                                duration = "Avoid buying"
+                            
+                            st.caption(f"📋 Entry ₹{entry:,.0f} | SL ₹{stoploss:,.0f} | T1 ₹{target1:,.0f} | T2 ₹{target2:,.0f}")
+                            st.caption(f"⏱️ Duration: {duration} | Expiry in {days_exp} days")
+                            st.markdown("---")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            else:
+                # Show why no signals
+                filter_stats = data.get("filter_stats", {})
+                st.info(f"""
+                **No PUT signals found.**
+                
+                📊 Analysis: {data.get('stocks_analyzed', 0)} stocks scanned
+                - ❌ {filter_stats.get('no_data', 0)} stocks had no data
+                - 📉 {filter_stats.get('low_volatility', 0)} stocks had low ATR (<1.2%)
+                - ⚠️ {filter_stats.get('low_score', 0)} stocks had weak signals (score <5)
+                
+                *Try a different index or wait for better setups.*
+                """)
+        
+        # Footer info
+        st.markdown("---")
+        st.caption(f"Generated: {data.get('generated_at', '')} | Stocks with ATR < 1.2% filtered out")
+        
+    else:
+        st.error(f"Error: {data.get('error', 'Unknown error')}")
+        if st.button("🔄 Try Again", key="retry_options", use_container_width=True):
+            st.session_state.options_refresh = True
             st.rerun()
 
 

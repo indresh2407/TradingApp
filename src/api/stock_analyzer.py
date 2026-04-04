@@ -63,6 +63,29 @@ STOCK_LISTS = {
         "RELIANCE", "ONGC", "NTPC", "POWERGRID", "BPCL",
         "IOC", "GAIL", "ADANIGREEN", "TATAPOWER", "ADANIENSOL"
     ],
+    # F&O Stocks - Most liquid stocks with options trading
+    "FNO_STOCKS": [
+        # NIFTY 50 F&O (Most Liquid)
+        "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "HINDUNILVR", "ITC", "SBIN",
+        "BHARTIARTL", "KOTAKBANK", "LT", "AXISBANK", "ASIANPAINT", "MARUTI", "TITAN",
+        "BAJFINANCE", "HCLTECH", "WIPRO", "SUNPHARMA", "ULTRACEMCO", "TATAMOTORS",
+        "NTPC", "POWERGRID", "M&M", "ONGC", "JSWSTEEL", "TATASTEEL", "ADANIENT",
+        "ADANIPORTS", "COALINDIA", "BAJAJFINSV", "TECHM", "NESTLEIND", "GRASIM",
+        "DIVISLAB", "DRREDDY", "CIPLA", "BRITANNIA", "APOLLOHOSP", "EICHERMOT",
+        "HEROMOTOCO", "INDUSINDBK", "HINDALCO", "BPCL", "TATACONSUM", "SBILIFE",
+        "HDFCLIFE", "BAJAJ-AUTO", "LTIM",
+        # Bank Nifty F&O
+        "BANDHANBNK", "FEDERALBNK", "IDFCFIRSTB", "PNB", "BANKBARODA", "AUBANK",
+        # Other Popular F&O
+        "DLF", "TATAPOWER", "ZOMATO", "VEDL", "SAIL", "NMDC", "JINDALSTEL",
+        "IRCTC", "HAL", "BEL", "BHEL", "GAIL", "IOC", "PETRONET",
+        "PIDILITIND", "HAVELLS", "VOLTAS", "GODREJCP", "DABUR", "MARICO",
+        "LUPIN", "AUROPHARMA", "BIOCON", "ALKEM", "TORNTPHARM",
+        "MUTHOOTFIN", "CHOLAFIN", "SHRIRAMFIN", "M&MFIN", "PFC", "RECLTD",
+        "MPHASIS", "COFORGE", "PERSISTENT", "LTTS", "TATAELXSI",
+        "MRF", "BALKRISIND", "BOSCHLTD", "MOTHERSON", "EXIDEIND",
+        "AMBUJACEM", "ACC", "SHREECEM", "RAMCOCEM"
+    ],
     # FULL MARKET SCAN - 500+ stocks across all sectors (price > ₹20)
     "FULL MARKET": [
         # Large Caps (NIFTY 50)
@@ -3624,25 +3647,34 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                         signal_data["confidence"] = "MODERATE"
                         signal_data["confidence_pct"] = 60
                     
-                    # Entry & Targets for LONG
+                    # Entry & Targets for LONG (ATR-based for realistic intraday moves)
                     entry = round(ltp, 2)
-                    stoploss = round(max(bb_5m_lower * 0.998, st_5m_value * 0.995, day_low * 0.998), 2)
                     
-                    # Targets based on BB and day high
-                    base_target1 = min(bb_5m_upper, day_high * 1.002)
-                    base_target2 = max(bb_5m_upper * 1.01, day_high * 1.005)
+                    # Use ATR for dynamic stops and targets
+                    # Stoploss: 1.5x ATR below entry (gives room for noise)
+                    atr_stop = entry - (atr_5m * 1.5)
+                    # Also respect key levels but with buffer
+                    level_stop = max(st_5m_value * 0.997, day_low * 0.998)
+                    stoploss = round(max(atr_stop, level_stop), 2)
                     
-                    # Apply time multiplier
-                    target1 = round(entry + (base_target1 - entry) * target_multiplier, 2)
-                    target2 = round(entry + (base_target2 - entry) * target_multiplier, 2)
+                    # Targets: ATR-based (more achievable)
+                    # T1: 1x ATR (quick scalp target)
+                    # T2: 1.5x ATR or BB upper (swing target)
+                    target1 = round(entry + (atr_5m * 1.0 * target_multiplier), 2)
+                    target2 = round(min(entry + (atr_5m * 1.5 * target_multiplier), bb_5m_upper), 2)
                     
-                    # Validate
+                    # If we have strong momentum (crossover), extend targets
+                    if st_5m_crossover or st_10m_crossover:
+                        target1 = round(entry + (atr_5m * 1.2 * target_multiplier), 2)
+                        target2 = round(entry + (atr_5m * 2.0 * target_multiplier), 2)
+                    
+                    # Validate minimum distances
                     if stoploss >= entry:
-                        stoploss = round(entry * 0.993, 2)
-                    if target1 <= entry:
-                        target1 = round(entry * (1 + 0.01 * target_multiplier), 2)
+                        stoploss = round(entry * 0.995, 2)  # 0.5% minimum
+                    if target1 <= entry * 1.003:
+                        target1 = round(entry * 1.005, 2)  # 0.5% minimum
                     if target2 <= target1:
-                        target2 = round(entry * (1 + 0.02 * target_multiplier), 2)
+                        target2 = round(target1 * 1.005, 2)
                     
                     signal_data["entry"] = entry
                     signal_data["stoploss"] = stoploss
@@ -3690,25 +3722,34 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                         signal_data["confidence"] = "MODERATE"
                         signal_data["confidence_pct"] = 60
                     
-                    # Entry & Targets for SHORT
+                    # Entry & Targets for SHORT (ATR-based for realistic intraday moves)
                     entry = round(ltp, 2)
-                    stoploss = round(min(bb_5m_upper * 1.002, st_5m_value * 1.005, day_high * 1.002), 2)
                     
-                    # Targets based on BB and day low
-                    base_target1 = max(bb_5m_lower, day_low * 0.998)
-                    base_target2 = min(bb_5m_lower * 0.99, day_low * 0.995)
+                    # Use ATR for dynamic stops and targets
+                    # Stoploss: 1.5x ATR above entry (gives room for noise)
+                    atr_stop = entry + (atr_5m * 1.5)
+                    # Also respect key levels but with buffer
+                    level_stop = min(st_5m_value * 1.003, day_high * 1.002)
+                    stoploss = round(min(atr_stop, level_stop), 2)
                     
-                    # Apply time multiplier
-                    target1 = round(entry - (entry - base_target1) * target_multiplier, 2)
-                    target2 = round(entry - (entry - base_target2) * target_multiplier, 2)
+                    # Targets: ATR-based (more achievable)
+                    # T1: 1x ATR (quick scalp target)
+                    # T2: 1.5x ATR or BB lower (swing target)
+                    target1 = round(entry - (atr_5m * 1.0 * target_multiplier), 2)
+                    target2 = round(max(entry - (atr_5m * 1.5 * target_multiplier), bb_5m_lower), 2)
                     
-                    # Validate
+                    # If we have strong momentum (crossover), extend targets
+                    if st_5m_crossover or st_10m_crossover:
+                        target1 = round(entry - (atr_5m * 1.2 * target_multiplier), 2)
+                        target2 = round(entry - (atr_5m * 2.0 * target_multiplier), 2)
+                    
+                    # Validate minimum distances
                     if stoploss <= entry:
-                        stoploss = round(entry * 1.007, 2)
-                    if target1 >= entry:
-                        target1 = round(entry * (1 - 0.01 * target_multiplier), 2)
+                        stoploss = round(entry * 1.005, 2)  # 0.5% minimum
+                    if target1 >= entry * 0.997:
+                        target1 = round(entry * 0.995, 2)  # 0.5% minimum
                     if target2 >= target1:
-                        target2 = round(entry * (1 - 0.02 * target_multiplier), 2)
+                        target2 = round(target1 * 0.995, 2)
                     
                     signal_data["entry"] = entry
                     signal_data["stoploss"] = stoploss
@@ -3768,5 +3809,391 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
             "status": "error",
             "long_signals": [],
             "short_signals": [],
+            "error": str(e)
+        }
+
+
+def get_options_signals(index_name: str = "FNO_STOCKS", num_stocks: int = 6) -> Dict[str, Any]:
+    """
+    Options Trading Strategy - Designed for F&O stocks
+    
+    Key Differences from DayTrade:
+    1. Only F&O stocks (liquid options)
+    2. Larger targets (1.5-2%+) for option premium gains
+    3. ATR-based volatility filtering (need volatile stocks)
+    4. Expiry awareness (weekly Thursday)
+    5. Strike recommendations (ATM/OTM)
+    
+    Args:
+        index_name: Index to scan - "FNO_STOCKS", "NIFTY 50", "NIFTY 100", "NIFTY IT", etc.
+        num_stocks: Number of signals to return
+    
+    Returns:
+        Dict with call_signals, put_signals, and analysis
+    """
+    try:
+        time_context = get_market_time_context()
+        
+        # Check expiry day (Thursday)
+        today = datetime.now()
+        is_expiry_day = today.weekday() == 3  # Thursday
+        days_to_expiry = (3 - today.weekday()) % 7
+        if days_to_expiry == 0 and today.hour >= 15:
+            days_to_expiry = 7
+        
+        # Get stocks based on index selection
+        # For options, we intersect with F&O stocks to ensure liquidity
+        fno_stocks_list = STOCK_LISTS.get("FNO_STOCKS", [])
+        
+        if index_name == "FNO_STOCKS" or index_name == "ALL F&O":
+            stocks_to_scan = fno_stocks_list
+        else:
+            # Get index stocks and filter to only F&O eligible
+            index_stocks = get_stocks_for_index(index_name)
+            # Intersect with F&O stocks
+            stocks_to_scan = [s for s in index_stocks if s in fno_stocks_list]
+            
+            # If no overlap, just use the index stocks (they might have F&O)
+            if not stocks_to_scan:
+                stocks_to_scan = index_stocks
+        
+        fno_stocks = stocks_to_scan
+        
+        call_signals = []  # BUY CALL
+        put_signals = []   # BUY PUT
+        stocks_analyzed = 0
+        no_data_count = 0
+        low_volatility_count = 0
+        low_score_count = 0
+        
+        logger.info(f"Options Strategy: Analyzing {len(fno_stocks)} F&O stocks from {index_name}")
+        
+        for symbol in fno_stocks:
+            try:
+                stocks_analyzed += 1
+                yahoo_symbol = get_yahoo_symbol(symbol)
+                ticker = yf.Ticker(yahoo_symbol)
+                
+                # Get 5-minute data
+                hist_5m = ticker.history(period="5d", interval="5m")
+                
+                if hist_5m.empty or len(hist_5m) < 50:
+                    no_data_count += 1
+                    continue
+                
+                # Resample to 15m for options (slightly longer timeframe)
+                hist_15m = hist_5m.resample('15min').agg({
+                    'Open': 'first', 'High': 'max', 'Low': 'min',
+                    'Close': 'last', 'Volume': 'sum'
+                }).dropna()
+                
+                if len(hist_15m) < 20:
+                    continue
+                
+                ltp = hist_5m['Close'].iloc[-1]
+                
+                # ============== VOLATILITY CHECK ==============
+                # Options need volatility - filter low-volatility stocks
+                atr_5m = calculate_atr(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], period=14)
+                atr_pct = (atr_5m / ltp) * 100
+                
+                # Original: 1.2% ATR minimum for F&O stocks
+                if atr_pct < 1.2:
+                    low_volatility_count += 1
+                    continue
+                
+                # ============== INDICATORS ==============
+                # VWAP
+                vwap_data = calculate_vwap(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], hist_5m['Volume'])
+                vwap = vwap_data.get("vwap", ltp)
+                vwap_signal = vwap_data.get("signal", "NEUTRAL")
+                vwap_dist = vwap_data.get("distance_pct", 0)
+                
+                # Supertrend (5m)
+                st_5m = calculate_supertrend_simple(hist_5m['High'], hist_5m['Low'], hist_5m['Close'])
+                st_5m_signal = st_5m.get("signal", "NEUTRAL")
+                st_5m_crossover = st_5m.get("crossover", False)
+                st_5m_value = st_5m.get("value", ltp)
+                
+                # Supertrend (15m)
+                st_15m = calculate_supertrend_simple(hist_15m['High'], hist_15m['Low'], hist_15m['Close'])
+                st_15m_signal = st_15m.get("signal", "NEUTRAL")
+                st_15m_crossover = st_15m.get("crossover", False)
+                
+                # Bollinger Bands
+                bb_data = calculate_bollinger_bands(hist_5m['Close'], period=20)
+                bb_signal = bb_data.get("signal", "NEUTRAL")
+                bb_upper = bb_data.get("upper", ltp)
+                bb_lower = bb_data.get("lower", ltp)
+                bb_squeeze = bb_data.get("squeeze", False)
+                
+                # ADX (for trend strength - important for options)
+                adx_data = calculate_adx(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], 
+                                         di_length=7, adx_smoothing=7)
+                adx_value = adx_data.get("adx", 0)
+                adx_direction = adx_data.get("trend_direction", "NEUTRAL")
+                adx_strength = adx_data.get("trend_strength", "WEAK")
+                
+                # ROC (momentum)
+                roc_data = calculate_roc(hist_5m['Close'], period=10)
+                roc_value = roc_data.get("roc", 0)
+                roc_signal = roc_data.get("signal", "NEUTRAL")
+                roc_divergence = roc_data.get("bearish_divergence", False) or roc_data.get("bullish_divergence", False)
+                
+                # Day's range
+                today_data = hist_5m.tail(75)
+                day_high = today_data['High'].max()
+                day_low = today_data['Low'].min()
+                day_open = today_data['Open'].iloc[0] if len(today_data) > 0 else ltp
+                change_pct = ((ltp - day_open) / day_open) * 100
+                day_range_pct = ((day_high - day_low) / day_low) * 100
+                
+                # ============== CALL SIGNAL (BUY CALL) ==============
+                call_score = 0
+                call_reasons = []
+                
+                # Trend confirmations
+                if vwap_signal == "BULLISH":
+                    call_score += 1
+                    call_reasons.append(">VWAP")
+                if st_5m_signal == "BULLISH":
+                    call_score += 1
+                    if st_5m_crossover:
+                        call_score += 2
+                        call_reasons.append("🔥 ST Cross")
+                    else:
+                        call_reasons.append("ST+")
+                if st_15m_signal == "BULLISH":
+                    call_score += 1
+                    if st_15m_crossover:
+                        call_score += 2
+                        call_reasons.append("🔥 15m Cross")
+                    else:
+                        call_reasons.append("15m ST+")
+                
+                # Momentum
+                if roc_signal == "BULLISH":
+                    call_score += 1
+                    call_reasons.append("ROC+")
+                
+                # ADX trend strength (strong trends are good for options)
+                if adx_value >= 25 and adx_direction == "BULLISH":
+                    call_score += 2
+                    call_reasons.append(f"ADX {adx_value:.0f}")
+                
+                # BB Squeeze (breakout potential)
+                if bb_squeeze and st_5m_signal == "BULLISH":
+                    call_score += 2
+                    call_reasons.append("🎯 Squeeze")
+                
+                # Oversold bounce
+                if bb_signal == "OVERSOLD":
+                    call_score += 1
+                    call_reasons.append("BB Oversold")
+                
+                # ============== PUT SIGNAL (BUY PUT) ==============
+                put_score = 0
+                put_reasons = []
+                
+                # Trend confirmations
+                if vwap_signal == "BEARISH":
+                    put_score += 1
+                    put_reasons.append("<VWAP")
+                if st_5m_signal == "BEARISH":
+                    put_score += 1
+                    if st_5m_crossover:
+                        put_score += 2
+                        put_reasons.append("🔥 ST Cross")
+                    else:
+                        put_reasons.append("ST-")
+                if st_15m_signal == "BEARISH":
+                    put_score += 1
+                    if st_15m_crossover:
+                        put_score += 2
+                        put_reasons.append("🔥 15m Cross")
+                    else:
+                        put_reasons.append("15m ST-")
+                
+                # Momentum
+                if roc_signal == "BEARISH":
+                    put_score += 1
+                    put_reasons.append("ROC-")
+                
+                # ADX trend strength
+                if adx_value >= 25 and adx_direction == "BEARISH":
+                    put_score += 2
+                    put_reasons.append(f"ADX {adx_value:.0f}")
+                
+                # BB Squeeze (breakout potential)
+                if bb_squeeze and st_5m_signal == "BEARISH":
+                    put_score += 2
+                    put_reasons.append("🎯 Squeeze")
+                
+                # Overbought reversal
+                if bb_signal == "OVERBOUGHT":
+                    put_score += 1
+                    put_reasons.append("BB Overbought")
+                
+                # ============== GENERATE SIGNALS ==============
+                # Original threshold
+                min_score = 5  # 5 confirmations required
+                
+                # Calculate strike prices
+                strike_interval = 50 if ltp > 1000 else 25 if ltp > 500 else 10 if ltp > 100 else 5
+                atm_strike = round(ltp / strike_interval) * strike_interval
+                
+                if call_score >= min_score and call_score > put_score:
+                    # Calculate targets (larger for options - 1.5-2%)
+                    entry = ltp
+                    stoploss = max(st_5m_value * 0.995, entry - (atr_5m * 2))
+                    target1 = entry + (atr_5m * 1.5)
+                    target2 = entry + (atr_5m * 2.5)
+                    
+                    # Strike recommendation
+                    if st_5m_crossover or st_15m_crossover:
+                        # Strong momentum - can go slightly OTM
+                        recommended_strike = atm_strike + strike_interval
+                        strike_type = "OTM"
+                    else:
+                        recommended_strike = atm_strike
+                        strike_type = "ATM"
+                    
+                    # Original confidence levels
+                    if call_score >= 8:
+                        confidence = "VERY HIGH"
+                        confidence_pct = 85
+                    elif call_score >= 7:
+                        confidence = "HIGH"
+                        confidence_pct = 75
+                    elif call_score >= 6:
+                        confidence = "GOOD"
+                        confidence_pct = 65
+                    else:
+                        confidence = "MODERATE"
+                        confidence_pct = 55
+                    
+                    call_signals.append({
+                        "symbol": symbol,
+                        "signal": "BUY CALL",
+                        "ltp": round(ltp, 2),
+                        "change_pct": round(change_pct, 2),
+                        "entry": round(entry, 2),
+                        "stoploss": round(stoploss, 2),
+                        "target1": round(target1, 2),
+                        "target2": round(target2, 2),
+                        "recommended_strike": recommended_strike,
+                        "strike_type": strike_type,
+                        "score": call_score,
+                        "confidence": confidence,
+                        "confidence_pct": confidence_pct,
+                        "reasons": call_reasons[:5],
+                        "reason_text": " | ".join(call_reasons[:4]),
+                        "atr_pct": round(atr_pct, 2),
+                        "adx": round(adx_value, 1),
+                        "adx_strength": adx_strength,
+                        "vwap_dist": round(vwap_dist, 2),
+                        "day_range_pct": round(day_range_pct, 2),
+                        "bb_squeeze": bb_squeeze,
+                        "st_crossover": st_5m_crossover or st_15m_crossover,
+                        "profit_potential": round(((target1 - entry) / entry) * 100, 2)
+                    })
+                
+                elif put_score >= min_score and put_score > call_score:
+                    # Calculate targets
+                    entry = ltp
+                    stoploss = min(st_5m_value * 1.005, entry + (atr_5m * 2))
+                    target1 = entry - (atr_5m * 1.5)
+                    target2 = entry - (atr_5m * 2.5)
+                    
+                    # Strike recommendation
+                    if st_5m_crossover or st_15m_crossover:
+                        recommended_strike = atm_strike - strike_interval
+                        strike_type = "OTM"
+                    else:
+                        recommended_strike = atm_strike
+                        strike_type = "ATM"
+                    
+                    # Original confidence levels
+                    if put_score >= 8:
+                        confidence = "VERY HIGH"
+                        confidence_pct = 85
+                    elif put_score >= 7:
+                        confidence = "HIGH"
+                        confidence_pct = 75
+                    elif put_score >= 6:
+                        confidence = "GOOD"
+                        confidence_pct = 65
+                    else:
+                        confidence = "MODERATE"
+                        confidence_pct = 55
+                    
+                    put_signals.append({
+                        "symbol": symbol,
+                        "signal": "BUY PUT",
+                        "ltp": round(ltp, 2),
+                        "change_pct": round(change_pct, 2),
+                        "entry": round(entry, 2),
+                        "stoploss": round(stoploss, 2),
+                        "target1": round(target1, 2),
+                        "target2": round(target2, 2),
+                        "recommended_strike": recommended_strike,
+                        "strike_type": strike_type,
+                        "score": put_score,
+                        "confidence": confidence,
+                        "confidence_pct": confidence_pct,
+                        "reasons": put_reasons[:5],
+                        "reason_text": " | ".join(put_reasons[:4]),
+                        "atr_pct": round(atr_pct, 2),
+                        "adx": round(adx_value, 1),
+                        "adx_strength": adx_strength,
+                        "vwap_dist": round(vwap_dist, 2),
+                        "day_range_pct": round(day_range_pct, 2),
+                        "bb_squeeze": bb_squeeze,
+                        "st_crossover": st_5m_crossover or st_15m_crossover,
+                        "profit_potential": round(((entry - target1) / entry) * 100, 2)
+                    })
+                
+                else:
+                    # Track why no signal generated
+                    low_score_count += 1
+                    
+            except Exception as e:
+                logger.debug(f"Error analyzing {symbol} for options: {e}")
+                continue
+        
+        # Sort by score and profit potential
+        call_signals.sort(key=lambda x: (x["score"] * 2 + x["profit_potential"]), reverse=True)
+        put_signals.sort(key=lambda x: (x["score"] * 2 + x["profit_potential"]), reverse=True)
+        
+        logger.info(f"Options: Found {len(call_signals)} CALL, {len(put_signals)} PUT signals")
+        logger.info(f"Options Filter Stats: {no_data_count} no data, {low_volatility_count} low ATR, {low_score_count} low score")
+        
+        return {
+            "status": "success",
+            "call_signals": call_signals[:num_stocks],
+            "put_signals": put_signals[:num_stocks],
+            "total_calls": len(call_signals),
+            "total_puts": len(put_signals),
+            "stocks_analyzed": stocks_analyzed,
+            "index": index_name,
+            "is_expiry_day": is_expiry_day,
+            "days_to_expiry": days_to_expiry,
+            "time_context": time_context,
+            "generated_at": datetime.now().strftime("%I:%M:%S %p"),
+            "timestamp": datetime.now().isoformat(),
+            # Diagnostic info
+            "filter_stats": {
+                "no_data": no_data_count,
+                "low_volatility": low_volatility_count,
+                "low_score": low_score_count
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get options signals: {e}")
+        return {
+            "status": "error",
+            "call_signals": [],
+            "put_signals": [],
             "error": str(e)
         }
