@@ -282,7 +282,7 @@ def calculate_roc(prices: pd.Series, period: int = 10) -> Dict[str, Any]:
 
 
 def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, 
-                  di_length: int = 7, adx_smoothing: int = 7) -> Dict[str, Any]:
+                  di_length: int = 10, adx_smoothing: int = 10) -> Dict[str, Any]:
     """
     Calculate ADX (Average Directional Index) - measures trend strength
     
@@ -298,7 +298,14 @@ def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series,
         Dict with ADX value, trend strength, and direction
     """
     if len(close) < di_length + adx_smoothing + 5:
-        return {"adx": 0, "trend_strength": "WEAK", "weakening": False, "plus_di": 0, "minus_di": 0}
+        return {
+            "adx": 0, "trend_strength": "WEAK", "weakening": False, 
+            "plus_di": 0, "minus_di": 0, "prev_plus_di": 0, "prev_minus_di": 0,
+            "di_gap": 0, "prev_di_gap": 0, "di_gap_change": 0,
+            "di_gap_narrowing": False, "di_gap_widening": False,
+            "rising": False, "flat": True, "no_trend": True,
+            "adx_change": 0, "prev_adx": 0, "trend_direction": "NEUTRAL"
+        }
     
     # Calculate True Range
     tr1 = high - low
@@ -339,17 +346,55 @@ def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series,
     else:
         trend_strength = "WEAK"
     
-    # ADX falling = trend weakening
-    weakening = current_adx < prev_adx and current_adx > 20
+    # ADX direction - CRITICAL for signal quality
+    adx_change = current_adx - prev_adx
+    
+    # ADX rising = trend strengthening (GOOD for entry)
+    rising = adx_change > 0.5  # ADX increasing by more than 0.5
+    
+    # ADX falling = trend weakening (BAD for entry)
+    weakening = adx_change < -0.5 and current_adx > 15  # ADX decreasing
+    
+    # ADX flat = no momentum in trend (CAUTION)
+    flat = abs(adx_change) <= 0.5
+    
+    # No trend at all - ADX too low
+    no_trend = current_adx < 20
+    
+    # Get current and previous DI values for gap analysis
+    current_plus_di = plus_di.iloc[-1] if not plus_di.empty else 0
+    current_minus_di = minus_di.iloc[-1] if not minus_di.empty else 0
+    prev_plus_di = plus_di.iloc[-2] if len(plus_di) > 1 else current_plus_di
+    prev_minus_di = minus_di.iloc[-2] if len(minus_di) > 1 else current_minus_di
+    
+    # Calculate DI gap (difference between dominant and non-dominant DI)
+    # For bearish: -DI should be > +DI, gap = -DI minus +DI
+    # For bullish: +DI should be > -DI, gap = +DI minus -DI
+    current_di_gap = abs(current_plus_di - current_minus_di)
+    prev_di_gap = abs(prev_plus_di - prev_minus_di)
+    di_gap_change = current_di_gap - prev_di_gap
+    di_gap_narrowing = di_gap_change < -1.0  # Gap shrinking by more than 1 point
+    di_gap_widening = di_gap_change > 1.0   # Gap growing by more than 1 point
     
     return {
         "adx": round(current_adx, 1),
         "prev_adx": round(prev_adx, 1),
+        "adx_change": round(adx_change, 1),
         "trend_strength": trend_strength,
+        "rising": rising,
         "weakening": weakening,
-        "plus_di": round(plus_di.iloc[-1], 1) if not plus_di.empty else 0,
-        "minus_di": round(minus_di.iloc[-1], 1) if not minus_di.empty else 0,
-        "trend_direction": "BULLISH" if plus_di.iloc[-1] > minus_di.iloc[-1] else "BEARISH"
+        "flat": flat,
+        "no_trend": no_trend,
+        "plus_di": round(current_plus_di, 1),
+        "minus_di": round(current_minus_di, 1),
+        "prev_plus_di": round(prev_plus_di, 1),
+        "prev_minus_di": round(prev_minus_di, 1),
+        "di_gap": round(current_di_gap, 1),
+        "prev_di_gap": round(prev_di_gap, 1),
+        "di_gap_change": round(di_gap_change, 1),
+        "di_gap_narrowing": di_gap_narrowing,
+        "di_gap_widening": di_gap_widening,
+        "trend_direction": "BULLISH" if current_plus_di > current_minus_di else "BEARISH"
     }
 
 
@@ -1017,7 +1062,12 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
     - entry, stoploss, target1, target2
     - gap analysis for intraday
     - time_context for market timing
+    - data_status: "LIVE", "STALE", or "ERROR" - indicates data freshness
+    - data_error: error message if data fetch failed
+    - data_timestamp: when data was fetched
     """
+    from datetime import datetime
+    
     # Get market time context
     time_context = get_market_time_context()
     target_multiplier = time_context["target_multiplier"]
@@ -1030,7 +1080,15 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
         hist_daily = ticker.history(period="1mo", interval="1d")
         
         if hist_daily.empty or len(hist_daily) < 14:
-            return None
+            logger.warning(f"No daily data for {symbol} - may be rate limited or delisted")
+            return {
+                "symbol": symbol,
+                "data_status": "ERROR",
+                "data_error": "No data available - API rate limited or symbol invalid",
+                "data_timestamp": datetime.now().isoformat(),
+                "signal": "ERROR",
+                "ltp": 0
+            }
         
         # Get INTRADAY data (5-min) for Supertrend - matches what traders see on charts
         hist_intraday = ticker.history(period="5d", interval="5m")
@@ -1119,6 +1177,28 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
         vwap_crossed_above = vwap_data["crossed_above"]
         vwap_crossed_below = vwap_data["crossed_below"]
         
+        # ADX - Trend Strength (CRITICAL for filtering weak signals)
+        if not hist_intraday.empty and len(hist_intraday) >= 20:
+            adx_data = calculate_adx(
+                hist_intraday['High'],
+                hist_intraday['Low'],
+                hist_intraday['Close'],
+                di_length=10,
+                adx_smoothing=10
+            )
+        else:
+            adx_data = calculate_adx(hist['High'], hist['Low'], hist['Close'])
+        
+        adx_value = adx_data.get("adx", 0)
+        adx_direction = adx_data.get("trend_direction", "NEUTRAL")
+        adx_rising = adx_data.get("rising", False)
+        adx_weakening = adx_data.get("weakening", False)
+        adx_flat = adx_data.get("flat", False)
+        adx_no_trend = adx_data.get("no_trend", False)
+        adx_change = adx_data.get("adx_change", 0)
+        plus_di = adx_data.get("plus_di", 0)
+        minus_di = adx_data.get("minus_di", 0)
+        
         # Determine signal
         signal = "NEUTRAL"
         strength = 0
@@ -1193,6 +1273,26 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
         if momentum > 1.5:
             long_score += 1
         
+        # 7. ADX - Trend Strength Confirmation (CRITICAL)
+        if adx_value >= 25 and adx_direction == "BULLISH" and plus_di > minus_di:
+            if adx_rising:
+                long_score += 3  # Strong bonus for rising ADX
+                reasons.append(f"🔥 ADX Rising ({adx_value:.0f})")
+            elif not adx_flat and not adx_weakening:
+                long_score += 1
+                reasons.append(f"ADX Strong ({adx_value:.0f})")
+        
+        # ADX WARNINGS - Reduce score for weak/falling ADX
+        if adx_weakening and adx_direction == "BULLISH":
+            long_score -= 2
+            reasons.append(f"⚠️ ADX Falling ({adx_change:+.1f})")
+        if adx_flat and adx_value >= 20:
+            long_score -= 1
+            reasons.append("⚠️ ADX Flat")
+        if adx_no_trend:
+            long_score -= 2
+            reasons.append(f"⛔ No Trend (ADX {adx_value:.0f})")
+        
         # === SHORT CONDITIONS (Need 3+ confirmations) ===
         short_score = 0
         
@@ -1243,6 +1343,26 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
         if momentum < -1.5:
             short_score += 1
         
+        # 7. ADX - Trend Strength Confirmation (CRITICAL)
+        if adx_value >= 25 and adx_direction == "BEARISH" and minus_di > plus_di:
+            if adx_rising:
+                short_score += 3  # Strong bonus for rising ADX
+                reasons.append(f"🔥 ADX Rising ({adx_value:.0f})")
+            elif not adx_flat and not adx_weakening:
+                short_score += 1
+                reasons.append(f"ADX Strong ({adx_value:.0f})")
+        
+        # ADX WARNINGS - Reduce score for weak/falling ADX
+        if adx_weakening and adx_direction == "BEARISH":
+            short_score -= 2
+            reasons.append(f"⚠️ ADX Falling ({adx_change:+.1f})")
+        if adx_flat and adx_value >= 20:
+            short_score -= 1
+            reasons.append("⚠️ ADX Flat")
+        if adx_no_trend:
+            short_score -= 2
+            reasons.append(f"⛔ No Trend (ADX {adx_value:.0f})")
+        
         # Include gap analysis in scoring
         if gap_analysis["intraday_bias"] == "LONG":
             long_score += 2
@@ -1252,6 +1372,30 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
             short_score += 2
             if gap_analysis["bias_reason"]:
                 reasons.append(gap_analysis["bias_reason"])
+        
+        # ============== HARD ADX FILTER ==============
+        # Block signals when ADX is weak/falling - prevents false signals
+        adx_blocks_long = False
+        adx_blocks_short = False
+        
+        if adx_no_trend:
+            # ADX < 20 = No trend at all
+            adx_blocks_long = True
+            adx_blocks_short = True
+            reasons.append(f"⛔ BLOCKED: No Trend (ADX {adx_value:.0f} < 20)")
+        elif adx_weakening:
+            # ADX is falling = trend is weakening
+            if adx_direction == "BULLISH":
+                adx_blocks_long = True
+                reasons.append(f"⛔ BLOCKED: ADX Falling ({adx_change:+.1f})")
+            else:
+                adx_blocks_short = True
+                reasons.append(f"⛔ BLOCKED: ADX Falling ({adx_change:+.1f})")
+        elif adx_flat and adx_value < 25:
+            # ADX is flat AND below 25 = weak trend
+            adx_blocks_long = True
+            adx_blocks_short = True
+            reasons.append(f"⛔ BLOCKED: ADX Flat & Weak ({adx_value:.0f})")
         
         # Determine final signal
         # STRICTER RULES: Require BOTH Supertrend AND VWAP to align
@@ -1275,8 +1419,8 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
             confidence = "LOW"
             min_score_required = 8  # Very high threshold for neutral indicators
         
-        # STRICT: Only give LONG signal if ST and VWAP both support it
-        if long_score >= min_score_required and long_score > short_score:
+        # STRICT: Only give LONG signal if ST and VWAP both support it AND ADX doesn't block
+        if long_score >= min_score_required and long_score > short_score and not adx_blocks_long:
             if st_vwap_aligned_long:
                 signal = "LONG"
                 strength = min(5, int(long_score / 2))
@@ -1293,7 +1437,7 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
                 signal = "NEUTRAL"
                 strength = 0
                 reasons = ["❌ ST/VWAP not aligned - AVOID"]
-        elif short_score >= min_score_required and short_score > long_score:
+        elif short_score >= min_score_required and short_score > long_score and not adx_blocks_short:
             if st_vwap_aligned_short:
                 signal = "SHORT"
                 strength = min(5, int(short_score / 2))
@@ -1320,7 +1464,79 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
         #           For SHORT - SL must be ABOVE entry, Target BELOW entry
         # TIME-AWARE: Reduce targets late in day based on target_multiplier
         
-        entry = round(ltp, 2)
+        # Calculate IDEAL ENTRY (not just current price)
+        # For LONG: Find support level to buy at
+        # For SHORT: Find resistance level to sell at
+        
+        entry_type = "LTP"
+        current_price = round(ltp, 2)
+        
+        if signal == "LONG" or long_score > short_score:
+            # LONG: Calculate ideal BUY entry (support levels)
+            entry_options = []
+            
+            # Option 1: VWAP level (if price is above VWAP)
+            if ltp > vwap:
+                entry_options.append(("VWAP", round(vwap, 2)))
+            
+            # Option 2: Supertrend support (if ST is below price)
+            if st_value < ltp:
+                entry_options.append(("ST Support", round(st_value, 2)))
+            
+            # Option 3: Day's low + small buffer (strong support)
+            day_low_entry = round(today_low * 1.003, 2)
+            if day_low_entry < ltp:
+                entry_options.append(("Day Low", day_low_entry))
+            
+            # Option 4: SMA5 support
+            if sma_5 < ltp:
+                entry_options.append(("SMA5", round(sma_5, 2)))
+            
+            # Choose the HIGHEST entry level below LTP (closest realistic entry)
+            valid_entries = [(t, p) for t, p in entry_options if p < ltp and p > ltp * 0.97]
+            
+            if valid_entries:
+                valid_entries.sort(key=lambda x: x[1], reverse=True)
+                entry_type, entry = valid_entries[0]
+            else:
+                # No good support - use 0.3% below LTP
+                entry = round(ltp * 0.997, 2)
+                entry_type = "Limit"
+        
+        elif signal == "SHORT" or short_score > long_score:
+            # SHORT: Calculate ideal SELL entry (resistance levels)
+            entry_options = []
+            
+            # Option 1: VWAP level (if price is below VWAP)
+            if ltp < vwap:
+                entry_options.append(("VWAP", round(vwap, 2)))
+            
+            # Option 2: Supertrend resistance (if ST is above price)
+            if st_value > ltp:
+                entry_options.append(("ST Resist", round(st_value, 2)))
+            
+            # Option 3: Day's high - small buffer (strong resistance)
+            day_high_entry = round(today_high * 0.997, 2)
+            if day_high_entry > ltp:
+                entry_options.append(("Day High", day_high_entry))
+            
+            # Option 4: SMA5 resistance
+            if sma_5 > ltp:
+                entry_options.append(("SMA5", round(sma_5, 2)))
+            
+            # Choose the LOWEST entry level above LTP (closest realistic entry)
+            valid_entries = [(t, p) for t, p in entry_options if p > ltp and p < ltp * 1.03]
+            
+            if valid_entries:
+                valid_entries.sort(key=lambda x: x[1])
+                entry_type, entry = valid_entries[0]
+            else:
+                # No good resistance - use 0.3% above LTP
+                entry = round(ltp * 1.003, 2)
+                entry_type = "Limit"
+        else:
+            entry = current_price
+            entry_type = "LTP"
         
         if signal == "LONG" or long_score > short_score:
             # LONG TRADE: Buy now, expect price to GO UP
@@ -1464,11 +1680,23 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
             "vwap_distance": vwap_distance,
             "vwap_crossed_above": vwap_crossed_above,
             "vwap_crossed_below": vwap_crossed_below,
+            # ADX - Trend Strength
+            "adx": adx_value,
+            "adx_direction": adx_direction,
+            "adx_rising": adx_rising,
+            "adx_weakening": adx_weakening,
+            "adx_flat": adx_flat,
+            "adx_no_trend": adx_no_trend,
+            "adx_change": adx_change,
+            "plus_di": plus_di,
+            "minus_di": minus_di,
             # Forward-looking
             "outlook": outlook,
             "range_position": round(range_position * 100),  # 0-100%
             # Trading levels
             "entry": entry,
+            "entry_type": entry_type,
+            "current_price": current_price,
             "stoploss": stoploss,
             "target1": target1,
             "target2": target2,
@@ -1486,12 +1714,31 @@ def analyze_stock(symbol: str) -> Optional[Dict[str, Any]]:
             "daily_range_pct": volatility["daily_range_pct"],
             "historical_vol": volatility["historical_vol"],
             "is_volatile": volatility["is_volatile"],
-            "vol_expansion": volatility.get("vol_expansion", False)
+            "vol_expansion": volatility.get("vol_expansion", False),
+            # DATA FRESHNESS - Critical for avoiding stale signal trades
+            "data_status": "LIVE",
+            "data_error": None,
+            "data_timestamp": datetime.now().isoformat()
         }
         
     except Exception as e:
         logger.error(f"Failed to analyze {symbol}: {e}")
-        return None
+        error_msg = str(e)
+        # Check for rate limiting
+        if "Too Many Requests" in error_msg or "rate" in error_msg.lower():
+            error_type = "RATE_LIMITED"
+            error_msg = "API rate limited - data may be stale. Wait 1-2 minutes."
+        else:
+            error_type = "ERROR"
+        
+        return {
+            "symbol": symbol,
+            "data_status": error_type,
+            "data_error": error_msg,
+            "data_timestamp": datetime.now().isoformat(),
+            "signal": "ERROR",
+            "ltp": 0
+        }
 
 
 def get_trading_tips(num_each: int = 2, index_name: str = "NIFTY 50") -> Tuple[List[Dict], List[Dict], Dict]:
@@ -1623,18 +1870,24 @@ def get_trading_tips(num_each: int = 2, index_name: str = "NIFTY 50") -> Tuple[L
             stock["direction_score"] = stock["short_score"]
     
     # Separate stocks by their dominant direction
-    # STRICT: Only include stocks where ST + VWAP are ALIGNED
+    # STRICT: Only include stocks where ST + VWAP are ALIGNED AND ADX is strong/rising
     long_stocks = [s for s in all_analysis 
                    if s["direction"] == "LONG" 
                    and s.get("signal") != "SHORT"
                    and s.get("supertrend") == "BULLISH"  # ST must be bullish
-                   and s.get("vwap_signal") != "BEARISH"]  # VWAP must not be bearish
+                   and s.get("vwap_signal") != "BEARISH"  # VWAP must not be bearish
+                   and not s.get("adx_no_trend", False)  # ADX must be >= 20
+                   and not s.get("adx_weakening", False)  # ADX must not be falling
+                   and not (s.get("adx_flat", False) and s.get("adx", 0) < 25)]  # ADX must not be flat & weak
     
     short_stocks = [s for s in all_analysis 
                     if s["direction"] == "SHORT" 
                     and s.get("signal") != "LONG"
                     and s.get("supertrend") == "BEARISH"  # ST must be bearish
-                    and s.get("vwap_signal") != "BULLISH"]  # VWAP must not be bullish
+                    and s.get("vwap_signal") != "BULLISH"  # VWAP must not be bullish
+                    and not s.get("adx_no_trend", False)  # ADX must be >= 20
+                    and not s.get("adx_weakening", False)  # ADX must not be falling
+                    and not (s.get("adx_flat", False) and s.get("adx", 0) < 25)]  # ADX must not be flat & weak
     
     # Further filter: require minimum activity score AND confidence
     min_activity_score = 20  # Increased from 15
@@ -2237,6 +2490,33 @@ def detect_big_move_stocks(index_name: str = "NIFTY 50", num_stocks: int = 5) ->
                 if volatility.get("vol_expansion", False):
                     vol_score += 10  # Extra bonus for expanding volatility
                 
+                # === 9. ADX FILTER (CRITICAL - No signal if ADX weak/falling) ===
+                try:
+                    adx_data = calculate_adx(
+                        hist_daily['High'], 
+                        hist_daily['Low'], 
+                        hist_daily['Close'],
+                        di_length=10, adx_smoothing=10
+                    )
+                    adx_value = adx_data.get("adx", 0)
+                    adx_rising = adx_data.get("rising", False)
+                    adx_weakening = adx_data.get("weakening", False)
+                    adx_flat = adx_data.get("flat", False)
+                    adx_no_trend = adx_data.get("no_trend", True)
+                    adx_change = adx_data.get("adx_change", 0)
+                except:
+                    adx_value = 0
+                    adx_rising = False
+                    adx_weakening = False
+                    adx_flat = False
+                    adx_no_trend = True
+                    adx_change = 0
+                
+                # ADX HARD FILTER - Skip stocks with weak/falling ADX
+                if adx_no_trend or adx_weakening or (adx_flat and adx_value < 25):
+                    logger.debug(f"Breakout: {symbol} - ADX blocked (ADX={adx_value:.1f}, change={adx_change:+.1f})")
+                    continue  # Skip this stock entirely
+                
                 # === TOTAL BREAKOUT POTENTIAL SCORE ===
                 total_score = (
                     atr_squeeze_score +
@@ -2371,7 +2651,11 @@ def detect_big_move_stocks(index_name: str = "NIFTY 50", num_stocks: int = 5) ->
                         "volatility_score": vol_score_val,
                         "volatility_rank": vol_rank,
                         "volatility_label": vol_label,
-                        "is_volatile": volatility.get("is_volatile", False)
+                        "is_volatile": volatility.get("is_volatile", False),
+                        # ADX DATA (confirmation that ADX passed filter)
+                        "adx": round(adx_value, 1),
+                        "adx_rising": adx_rising,
+                        "adx_change": round(adx_change, 1)
                     })
                     
             except Exception as e:
@@ -3264,10 +3548,32 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                 ticker = yf.Ticker(yahoo_symbol)
                 
                 # Get data for different timeframes
-                # 5-minute data (5 days)
-                hist_5m = ticker.history(period="5d", interval="5m")
-                # 10-minute data (calculated from 5m by resampling)
-                hist_10m = hist_5m.resample('10min').agg({
+                # 5-minute data (5 days for other indicators)
+                hist_5m_full = ticker.history(period="5d", interval="5m")
+                
+                if hist_5m_full.empty or len(hist_5m_full) < 50:
+                    continue
+                
+                # ============== EXTRACT TODAY'S DATA FOR INTRADAY INDICATORS ==============
+                # Supertrend and VWAP should be calculated on TODAY's data only
+                from datetime import datetime
+                import pytz
+                IST = pytz.timezone('Asia/Kolkata')
+                today = datetime.now(IST).date()
+                
+                # Filter for today's candles only
+                hist_5m_today = hist_5m_full[hist_5m_full.index.date == today].copy()
+                
+                # Need at least 10 candles for Supertrend (starts calculating at 10:05 AM)
+                if len(hist_5m_today) < 10:
+                    logger.debug(f"Skipping {symbol}: Not enough today's candles ({len(hist_5m_today)} < 10)")
+                    continue
+                
+                # Use full data for general analysis, today's data for intraday indicators
+                hist_5m = hist_5m_full  # Keep full data for reference
+                
+                # 10-minute data (from TODAY only)
+                hist_10m = hist_5m_today.resample('10min').agg({
                     'Open': 'first',
                     'High': 'max',
                     'Low': 'min',
@@ -3275,30 +3581,30 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     'Volume': 'sum'
                 }).dropna()
                 
-                if hist_5m.empty or len(hist_5m) < 50 or hist_10m.empty or len(hist_10m) < 20:
+                if hist_10m.empty or len(hist_10m) < 5:
                     continue
                 
-                ltp = hist_5m['Close'].iloc[-1]
+                ltp = hist_5m_today['Close'].iloc[-1]
                 
                 # Filter by minimum price
                 if ltp < min_price:
                     continue
                 
-                # ============== 5-MINUTE ANALYSIS ==============
-                # VWAP (5m)
-                vwap_5m_data = calculate_vwap(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], hist_5m['Volume'])
+                # ============== 5-MINUTE ANALYSIS (TODAY'S DATA) ==============
+                # VWAP (5m) - calculated on TODAY's data for intraday relevance
+                vwap_5m_data = calculate_vwap(hist_5m_today['High'], hist_5m_today['Low'], hist_5m_today['Close'], hist_5m_today['Volume'])
                 vwap_5m = vwap_5m_data.get("vwap", ltp)
                 vwap_5m_signal = vwap_5m_data.get("signal", "NEUTRAL")
                 vwap_5m_dist = vwap_5m_data.get("distance_pct", 0)
                 
-                # Supertrend (5m)
-                st_5m_data = calculate_supertrend_simple(hist_5m['High'], hist_5m['Low'], hist_5m['Close'])
+                # Supertrend (5m) - calculated on TODAY's data only
+                st_5m_data = calculate_supertrend_simple(hist_5m_today['High'], hist_5m_today['Low'], hist_5m_today['Close'])
                 st_5m_signal = st_5m_data.get("signal", "NEUTRAL")
                 st_5m_value = st_5m_data.get("value", ltp)
                 st_5m_crossover = st_5m_data.get("crossover", False)
                 
-                # Bollinger Bands (5m)
-                bb_5m_data = calculate_bollinger_bands(hist_5m['Close'], period=20)
+                # Bollinger Bands (5m) - using today's data
+                bb_5m_data = calculate_bollinger_bands(hist_5m_today['Close'], period=20)
                 bb_5m_signal = bb_5m_data.get("signal", "NEUTRAL")
                 bb_5m_upper = bb_5m_data.get("upper", ltp)
                 bb_5m_lower = bb_5m_data.get("lower", ltp)
@@ -3323,39 +3629,61 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                 bb_10m_signal = bb_10m_data.get("signal", "NEUTRAL")
                 bb_10m_squeeze = bb_10m_data.get("squeeze", False)
                 
-                # ============== RSI & VOLUME ==============
-                rsi_5m = calculate_rsi(hist_5m['Close'], period=14)
+                # ============== RSI & VOLUME (TODAY'S DATA) ==============
+                rsi_5m = calculate_rsi(hist_5m_today['Close'], period=14)
                 rsi_10m = calculate_rsi(hist_10m['Close'], period=14)
                 
-                avg_volume = hist_5m['Volume'].rolling(50).mean().iloc[-1]
-                current_volume = hist_5m['Volume'].tail(5).mean()
+                # Volume comparison: today's vs historical average
+                avg_volume = hist_5m_full['Volume'].rolling(50).mean().iloc[-1]  # Use full data for avg
+                current_volume = hist_5m_today['Volume'].tail(5).mean()  # Today's recent volume
                 volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
                 
-                # ============== ATR FOR TARGETS ==============
-                atr_5m = calculate_atr(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], period=14)
+                # ============== ATR FOR TARGETS (TODAY'S DATA) ==============
+                atr_5m = calculate_atr(hist_5m_today['High'], hist_5m_today['Low'], hist_5m_today['Close'], period=14)
                 atr_pct = (atr_5m / ltp) * 100
                 
-                # ============== ADVANCED INDICATORS ==============
-                # ADX - Trend Strength Measurement (DI Length=7, ADX Smoothing=7 for faster response)
-                adx_data = calculate_adx(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], 
-                                         di_length=7, adx_smoothing=7)
+                # ============== ADVANCED INDICATORS (TODAY'S DATA) ==============
+                # ADX - Trend Strength Measurement (DI Length=10, ADX Smoothing=10 for balanced response)
+                adx_data = calculate_adx(hist_5m_today['High'], hist_5m_today['Low'], hist_5m_today['Close'], 
+                                         di_length=10, adx_smoothing=10)
                 adx_value = adx_data.get("adx", 0)
                 adx_trend_strength = adx_data.get("trend_strength", "WEAK")
                 adx_weakening = adx_data.get("weakening", False)
+                adx_rising = adx_data.get("rising", False)
+                adx_flat = adx_data.get("flat", False)
+                adx_no_trend = adx_data.get("no_trend", False)
+                adx_change = adx_data.get("adx_change", 0)
                 adx_direction = adx_data.get("trend_direction", "NEUTRAL")
                 plus_di = adx_data.get("plus_di", 0)
                 minus_di = adx_data.get("minus_di", 0)
+                prev_plus_di = adx_data.get("prev_plus_di", 0)
+                prev_minus_di = adx_data.get("prev_minus_di", 0)
+                di_gap = adx_data.get("di_gap", 0)
+                prev_di_gap = adx_data.get("prev_di_gap", 0)
+                di_gap_change = adx_data.get("di_gap_change", 0)
+                di_gap_narrowing = adx_data.get("di_gap_narrowing", False)
+                di_gap_widening = adx_data.get("di_gap_widening", False)
                 
-                # ROC - Rate of Change / Momentum Divergence
-                roc_data = calculate_roc(hist_5m['Close'], period=10)
+                # ============== CRITICAL NaN CHECK ==============
+                # Skip stock if ADX or Supertrend are not calculated (not enough data)
+                # This prevents false signals at market open
+                import math
+                if (math.isnan(adx_value) or adx_value == 0 or 
+                    math.isnan(st_5m_value) or st_5m_signal == "NEUTRAL" or
+                    math.isnan(atr_5m) or atr_5m == 0):
+                    logger.debug(f"Skipping {symbol}: Indicators not ready (ADX={adx_value}, ST={st_5m_value})")
+                    continue  # Skip - indicators not calculated yet
+                
+                # ROC - Rate of Change / Momentum Divergence (TODAY'S DATA)
+                roc_data = calculate_roc(hist_5m_today['Close'], period=10)
                 roc_value = roc_data.get("roc", 0)
                 roc_signal = roc_data.get("signal", "NEUTRAL")
                 roc_bearish_divergence = roc_data.get("bearish_divergence", False)
                 roc_bullish_divergence = roc_data.get("bullish_divergence", False)
                 roc_weakening = roc_data.get("weakening", False)
                 
-                # Advanced Bollinger Bands - Squeeze, Walk, Curl
-                bb_adv_5m = calculate_bb_advanced(hist_5m['Close'], period=20)
+                # Advanced Bollinger Bands - Squeeze, Walk, Curl (TODAY'S DATA)
+                bb_adv_5m = calculate_bb_advanced(hist_5m_today['Close'], period=20)
                 bb_squeeze = bb_adv_5m.get("squeeze", False)
                 bb_walking_upper = bb_adv_5m.get("walking_upper", False)
                 bb_walking_lower = bb_adv_5m.get("walking_lower", False)
@@ -3363,9 +3691,9 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                 bb_curling_up = bb_adv_5m.get("curling_up", False)
                 bb_percent_b = bb_adv_5m.get("percent_b", 50)
                 
-                # VWAP Distance - Rubber Band Effect
+                # VWAP Distance - Rubber Band Effect (TODAY'S DATA)
                 vwap_dist_data = calculate_vwap_distance(
-                    hist_5m['High'], hist_5m['Low'], hist_5m['Close'], hist_5m['Volume']
+                    hist_5m_today['High'], hist_5m_today['Low'], hist_5m_today['Close'], hist_5m_today['Volume']
                 )
                 vwap_overextended_up = vwap_dist_data.get("overextended_up", False)
                 vwap_overextended_down = vwap_dist_data.get("overextended_down", False)
@@ -3430,10 +3758,17 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     long_confirmations += 1
                 
                 # ============== ADVANCED LONG CONFIRMATIONS ==============
-                # ADX - Strong bullish trend
+                # ADX - Strong bullish trend ONLY if ADX is RISING
                 if adx_value >= 25 and adx_direction == "BULLISH" and plus_di > minus_di:
-                    long_confirmations += 1
-                    long_reasons.append(f"ADX Strong {adx_value:.0f}")
+                    if adx_rising:
+                        # ADX rising = trend strengthening = BEST signal
+                        long_confirmations += 2
+                        long_reasons.append(f"🔥 ADX Rising {adx_value:.0f}")
+                    elif not adx_weakening and not adx_flat:
+                        # ADX stable but strong
+                        long_confirmations += 1
+                        long_reasons.append(f"ADX {adx_value:.0f}")
+                    # If ADX is flat or falling, no confirmation bonus
                 
                 # ROC - Bullish momentum or bullish divergence
                 if roc_signal == "BULLISH" and not roc_weakening:
@@ -3459,10 +3794,20 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     long_reasons.append("🎯 VWAP Snap")
                 
                 # ============== LONG WARNINGS (RISK FACTORS) ==============
-                # ADX weakening while bullish = trend fading
+                # ADX weakening = trend fading - STRONG WARNING
                 if adx_weakening and adx_direction == "BULLISH":
-                    long_warnings.append("⚠️ ADX Weakening")
-                    long_confirmations -= 1  # Reduce confidence
+                    long_warnings.append(f"⚠️ ADX Falling ({adx_change:+.1f})")
+                    long_confirmations -= 2  # Stronger penalty
+                
+                # ADX flat = no momentum - CAUTION
+                if adx_flat and adx_value >= 20:
+                    long_warnings.append("⚠️ ADX Flat")
+                    long_confirmations -= 1
+                
+                # ADX too low = NO TREND - MAJOR WARNING
+                if adx_no_trend:
+                    long_warnings.append(f"⛔ No Trend (ADX {adx_value:.0f})")
+                    long_confirmations -= 2  # Strong penalty for no trend
                 
                 # ROC bearish divergence = price rising but momentum falling
                 if roc_bearish_divergence:
@@ -3517,10 +3862,17 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     short_confirmations += 1
                 
                 # ============== ADVANCED SHORT CONFIRMATIONS ==============
-                # ADX - Strong bearish trend
+                # ADX - Strong bearish trend ONLY if ADX is RISING
                 if adx_value >= 25 and adx_direction == "BEARISH" and minus_di > plus_di:
-                    short_confirmations += 1
-                    short_reasons.append(f"ADX Strong {adx_value:.0f}")
+                    if adx_rising:
+                        # ADX rising = trend strengthening = BEST signal
+                        short_confirmations += 2
+                        short_reasons.append(f"🔥 ADX Rising {adx_value:.0f}")
+                    elif not adx_weakening and not adx_flat:
+                        # ADX stable but strong
+                        short_confirmations += 1
+                        short_reasons.append(f"ADX {adx_value:.0f}")
+                    # If ADX is flat or falling, no confirmation bonus
                 
                 # ROC - Bearish momentum or bearish divergence
                 if roc_signal == "BEARISH" and not roc_weakening:
@@ -3546,10 +3898,20 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     short_reasons.append("🎯 VWAP Snap")
                 
                 # ============== SHORT WARNINGS (RISK FACTORS) ==============
-                # ADX weakening while bearish = downtrend fading
+                # ADX weakening = trend fading - STRONG WARNING
                 if adx_weakening and adx_direction == "BEARISH":
-                    short_warnings.append("⚠️ ADX Weakening")
+                    short_warnings.append(f"⚠️ ADX Falling ({adx_change:+.1f})")
+                    short_confirmations -= 2  # Stronger penalty
+                
+                # ADX flat = no momentum - CAUTION
+                if adx_flat and adx_value >= 20:
+                    short_warnings.append("⚠️ ADX Flat")
                     short_confirmations -= 1
+                
+                # ADX too low = NO TREND - MAJOR WARNING
+                if adx_no_trend:
+                    short_warnings.append(f"⛔ No Trend (ADX {adx_value:.0f})")
+                    short_confirmations -= 2  # Strong penalty for no trend
                 
                 # ROC bullish divergence = price falling but momentum rising
                 if roc_bullish_divergence:
@@ -3605,9 +3967,17 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     "adx": round(adx_value, 1),
                     "adx_strength": adx_trend_strength,
                     "adx_direction": adx_direction,
+                    "adx_rising": adx_rising,
                     "adx_weakening": adx_weakening,
+                    "adx_flat": adx_flat,
+                    "adx_no_trend": adx_no_trend,
+                    "adx_change": round(adx_change, 1),
                     "plus_di": round(plus_di, 1),
                     "minus_di": round(minus_di, 1),
+                    "di_gap": round(di_gap, 1),
+                    "di_gap_change": round(di_gap_change, 1),
+                    "di_gap_narrowing": di_gap_narrowing,
+                    "di_gap_widening": di_gap_widening,
                     "roc": round(roc_value, 2),
                     "roc_signal": roc_signal,
                     "roc_bearish_div": roc_bearish_divergence,
@@ -3625,7 +3995,88 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     "vwap_extreme_down": vwap_extreme_down
                 }
                 
-                if long_confirmations >= min_confirmations and long_confirmations > short_confirmations:
+                # ============== HARD ADX FILTER ==============
+                # STRICT: Only allow signals when ADX is RISING (trend strengthening)
+                # This prevents false signals in choppy/sideways markets
+                adx_blocks_long = False
+                adx_blocks_short = False
+                
+                # RULE 0: ADX must be a valid number (not NaN) - CRITICAL CHECK
+                # This prevents signals when indicators haven't calculated yet (e.g., market open)
+                import math
+                if math.isnan(adx_value) or adx_value == 0:
+                    adx_blocks_long = True
+                    adx_blocks_short = True
+                    long_warnings.append("⛔ BLOCKED: ADX Not Ready (NaN)")
+                    short_warnings.append("⛔ BLOCKED: ADX Not Ready (NaN)")
+                
+                # RULE 1: ADX must be >= 20 (minimum trend strength)
+                elif adx_no_trend:
+                    adx_blocks_long = True
+                    adx_blocks_short = True
+                    long_warnings.append(f"⛔ BLOCKED: No Trend (ADX {adx_value:.0f} < 20)")
+                    short_warnings.append(f"⛔ BLOCKED: No Trend (ADX {adx_value:.0f} < 20)")
+                
+                # RULE 2: ADX must NOT be falling (trend must not be weakening)
+                elif adx_weakening:
+                    adx_blocks_long = True
+                    adx_blocks_short = True
+                    long_warnings.append(f"⛔ BLOCKED: ADX Falling ({adx_change:+.1f})")
+                    short_warnings.append(f"⛔ BLOCKED: ADX Falling ({adx_change:+.1f})")
+                
+                # RULE 3: ADX must be RISING (except if already very strong >= 30)
+                elif not adx_rising and adx_value < 30:
+                    adx_blocks_long = True
+                    adx_blocks_short = True
+                    long_warnings.append(f"⛔ BLOCKED: ADX Not Rising ({adx_value:.0f}, {adx_change:+.1f})")
+                    short_warnings.append(f"⛔ BLOCKED: ADX Not Rising ({adx_value:.0f}, {adx_change:+.1f})")
+                
+                # ============== NEW RULE 4: ADX EXHAUSTION FILTER ==============
+                # When ADX > 80, the trend is likely exhausted and may reverse
+                # This catches late entries into overextended trends (like HAPPSTMNDS at ADX 91.6)
+                if adx_value > 80:
+                    adx_blocks_long = True
+                    adx_blocks_short = True
+                    long_warnings.append(f"⛔ BLOCKED: ADX Exhausted ({adx_value:.0f} > 80 - trend may reverse)")
+                    short_warnings.append(f"⛔ BLOCKED: ADX Exhausted ({adx_value:.0f} > 80 - trend may reverse)")
+                
+                # ============== NEW RULE 5: DI GAP NARROWING FILTER ==============
+                # If the gap between +DI and -DI is shrinking, momentum is weakening
+                # This catches trades like ONGC and HCLTECH where DI crossover happened shortly after entry
+                if di_gap_narrowing and di_gap < 15:
+                    # DI gap is narrowing AND gap is small (< 15 points) = momentum shift likely
+                    adx_blocks_long = True
+                    adx_blocks_short = True
+                    long_warnings.append(f"⛔ BLOCKED: DI Gap Narrowing ({di_gap:.0f}, {di_gap_change:+.1f} - momentum weakening)")
+                    short_warnings.append(f"⛔ BLOCKED: DI Gap Narrowing ({di_gap:.0f}, {di_gap_change:+.1f} - momentum weakening)")
+                elif di_gap_narrowing and not di_gap_widening:
+                    # DI gap is narrowing but still decent - add warning but don't block
+                    long_warnings.append(f"⚠️ CAUTION: DI Gap Shrinking ({di_gap:.0f}, {di_gap_change:+.1f})")
+                    short_warnings.append(f"⚠️ CAUTION: DI Gap Shrinking ({di_gap:.0f}, {di_gap_change:+.1f})")
+                
+                # ============== HARD SUPERTREND FILTER ==============
+                # STRICT: Supertrend direction MUST match signal direction
+                # This prevents SHORT signals when trend is BULLISH (and vice versa)
+                st_blocks_long = False
+                st_blocks_short = False
+                
+                # For LONG: Both 5m AND 10m Supertrend must be BULLISH
+                if st_5m_signal != "BULLISH":
+                    st_blocks_long = True
+                    long_warnings.append(f"⛔ BLOCKED: 5m ST not Bullish ({st_5m_signal})")
+                if st_10m_signal != "BULLISH":
+                    st_blocks_long = True
+                    long_warnings.append(f"⛔ BLOCKED: 10m ST not Bullish ({st_10m_signal})")
+                
+                # For SHORT: Both 5m AND 10m Supertrend must be BEARISH
+                if st_5m_signal != "BEARISH":
+                    st_blocks_short = True
+                    short_warnings.append(f"⛔ BLOCKED: 5m ST not Bearish ({st_5m_signal})")
+                if st_10m_signal != "BEARISH":
+                    st_blocks_short = True
+                    short_warnings.append(f"⛔ BLOCKED: 10m ST not Bearish ({st_10m_signal})")
+                
+                if long_confirmations >= min_confirmations and long_confirmations > short_confirmations and not adx_blocks_long and not st_blocks_long:
                     signal_data["signal"] = "LONG"
                     signal_data["confirmations"] = long_confirmations
                     signal_data["reasons"] = long_reasons[:6]
@@ -3647,8 +4098,27 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                         signal_data["confidence"] = "MODERATE"
                         signal_data["confidence_pct"] = 60
                     
-                    # Entry & Targets for LONG (ATR-based for realistic intraday moves)
-                    entry = round(ltp, 2)
+                    # Entry & Targets for LONG (relaxed entry - small pullback from current)
+                    # Simple logic: Use VWAP/ST if close, otherwise small 0.15% pullback
+                    
+                    # Check if VWAP is a good nearby entry (within 0.5% below current)
+                    vwap_diff_pct = ((ltp - vwap_5m) / ltp) * 100 if ltp > 0 else 0
+                    
+                    if vwap_5m < ltp and 0.1 < vwap_diff_pct < 0.5:
+                        # VWAP is close below - use it as entry
+                        entry = round(vwap_5m, 2)
+                        entry_type = "VWAP"
+                    elif st_5m_value < ltp and 0.1 < ((ltp - st_5m_value) / ltp) * 100 < 0.5:
+                        # Supertrend support is close below - use it
+                        entry = round(st_5m_value, 2)
+                        entry_type = "ST Support"
+                    else:
+                        # Default: Small 0.15% pullback (easy to achieve)
+                        entry = round(ltp * 0.9985, 2)
+                        entry_type = "Limit"
+                    
+                    signal_data["entry_type"] = entry_type
+                    signal_data["current_price"] = round(ltp, 2)
                     
                     # Use ATR for dynamic stops and targets
                     # Stoploss: 1.5x ATR below entry (gives room for noise)
@@ -3700,7 +4170,7 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                     else:
                         logger.info(f"LONG {symbol}: Target nearly achieved ({profit_potential_t1:.2f}% to T1), skipping")
                     
-                elif short_confirmations >= min_confirmations and short_confirmations > long_confirmations:
+                elif short_confirmations >= min_confirmations and short_confirmations > long_confirmations and not adx_blocks_short and not st_blocks_short:
                     signal_data["signal"] = "SHORT"
                     signal_data["confirmations"] = short_confirmations
                     signal_data["reasons"] = short_reasons[:6]
@@ -3722,8 +4192,27 @@ def get_multi_timeframe_signals(index_name: str = "NIFTY 50", num_stocks: int = 
                         signal_data["confidence"] = "MODERATE"
                         signal_data["confidence_pct"] = 60
                     
-                    # Entry & Targets for SHORT (ATR-based for realistic intraday moves)
-                    entry = round(ltp, 2)
+                    # Entry & Targets for SHORT (relaxed entry - small bounce from current)
+                    # Simple logic: Use VWAP/ST if close, otherwise small 0.15% bounce
+                    
+                    # Check if VWAP is a good nearby entry (within 0.5% above current)
+                    vwap_diff_pct = ((vwap_5m - ltp) / ltp) * 100 if ltp > 0 else 0
+                    
+                    if vwap_5m > ltp and 0.1 < vwap_diff_pct < 0.5:
+                        # VWAP is close above - use it as entry
+                        entry = round(vwap_5m, 2)
+                        entry_type = "VWAP"
+                    elif st_5m_value > ltp and 0.1 < ((st_5m_value - ltp) / ltp) * 100 < 0.5:
+                        # Supertrend resistance is close above - use it
+                        entry = round(st_5m_value, 2)
+                        entry_type = "ST Resist"
+                    else:
+                        # Default: Small 0.15% bounce (easy to achieve)
+                        entry = round(ltp * 1.0015, 2)
+                        entry_type = "Limit"
+                    
+                    signal_data["entry_type"] = entry_type
+                    signal_data["current_price"] = round(ltp, 2)
                     
                     # Use ATR for dynamic stops and targets
                     # Stoploss: 1.5x ATR above entry (gives room for noise)
@@ -3929,7 +4418,7 @@ def get_options_signals(index_name: str = "FNO_STOCKS", num_stocks: int = 6) -> 
                 
                 # ADX (for trend strength - important for options)
                 adx_data = calculate_adx(hist_5m['High'], hist_5m['Low'], hist_5m['Close'], 
-                                         di_length=7, adx_smoothing=7)
+                                         di_length=10, adx_smoothing=10)
                 adx_value = adx_data.get("adx", 0)
                 adx_direction = adx_data.get("trend_direction", "NEUTRAL")
                 adx_strength = adx_data.get("trend_strength", "WEAK")

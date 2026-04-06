@@ -1,371 +1,492 @@
-#!/usr/bin/env python3
 """
-Backtest Today's Predictions
-Simulates what our strategy would have predicted during today's trading session
-and checks if those predictions were successful.
+Backtest Today's DayTrade Signals
+Analyzes what happened to signals generated today
 """
 
 import yfinance as yf
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+import pytz
 import warnings
 warnings.filterwarnings('ignore')
 
-# Stock lists to analyze
-NIFTY_50_STOCKS = [
-    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "BHARTIARTL",
-    "HINDUNILVR", "ITC", "KOTAKBANK", "LT", "AXISBANK", "MARUTI", "WIPRO",
-    "HCLTECH", "ASIANPAINT", "BAJFINANCE", "TITAN", "SUNPHARMA", "TATAMOTORS",
-    "ONGC", "NTPC", "POWERGRID", "COALINDIA", "BPCL", "GRASIM", "ULTRACEMCO",
-    "JSWSTEEL", "TATASTEEL", "HINDALCO"
+# NIFTY 100 stocks (subset for faster testing)
+NIFTY_100 = [
+    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR", "SBIN", 
+    "BHARTIARTL", "KOTAKBANK", "ITC", "LT", "AXISBANK", "ASIANPAINT", "MARUTI",
+    "BAJFINANCE", "HCLTECH", "WIPRO", "SUNPHARMA", "TITAN", "ULTRACEMCO",
+    "NESTLEIND", "TECHM", "POWERGRID", "NTPC", "TATAMOTORS", "ONGC", "COALINDIA",
+    "BAJAJFINSV", "ADANIPORTS", "JSWSTEEL", "TATASTEEL", "HINDALCO", "INDUSINDBK",
+    "DRREDDY", "CIPLA", "GRASIM", "DIVISLAB", "BPCL", "EICHERMOT", "BRITANNIA",
+    "HEROMOTOCO", "APOLLOHOSP", "SBILIFE", "HDFCLIFE", "BAJAJ-AUTO", "TATACONSUM",
+    "M&M", "ADANIENT", "SHREECEM", "PIDILITIND"
 ]
 
-def get_yahoo_symbol(symbol: str) -> str:
-    """Convert NSE symbol to Yahoo Finance symbol"""
-    return f"{symbol}.NS"
+IST = pytz.timezone('Asia/Kolkata')
 
-def calculate_rsi(close: pd.Series, period: int = 14) -> float:
-    """Calculate RSI"""
-    delta = close.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1] if not rsi.empty else 50
-
-def calculate_supertrend(high: pd.Series, low: pd.Series, close: pd.Series, 
-                         period: int = 10, multiplier: float = 3.0) -> str:
-    """Calculate Supertrend signal"""
-    try:
-        hl2 = (high + low) / 2
-        tr1 = high - low
-        tr2 = abs(high - close.shift(1))
-        tr3 = abs(low - close.shift(1))
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(window=period).mean()
-        
-        upper_band = hl2 + (multiplier * atr)
-        lower_band = hl2 - (multiplier * atr)
-        
-        if close.iloc[-1] > upper_band.iloc[-2]:
-            return "BULLISH"
-        elif close.iloc[-1] < lower_band.iloc[-2]:
-            return "BEARISH"
-        return "NEUTRAL"
-    except:
-        return "NEUTRAL"
-
-def analyze_stock_at_time(symbol: str, hist: pd.DataFrame, time_idx: int) -> Dict:
-    """Analyze a stock at a specific point in time"""
-    if time_idx < 20 or time_idx >= len(hist):
-        return None
+def calculate_supertrend(df, period=10, multiplier=3):
+    """Calculate Supertrend indicator"""
+    hl2 = (df['High'] + df['Low']) / 2
     
-    # Get data up to this point in time
-    data = hist.iloc[:time_idx+1].copy()
+    # ATR calculation
+    tr1 = df['High'] - df['Low']
+    tr2 = abs(df['High'] - df['Close'].shift(1))
+    tr3 = abs(df['Low'] - df['Close'].shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
     
-    ltp = data['Close'].iloc[-1]
-    prev_close = data['Close'].iloc[-2]
-    change_pct = ((ltp - prev_close) / prev_close) * 100
+    # Supertrend bands
+    upper_band = hl2 + (multiplier * atr)
+    lower_band = hl2 - (multiplier * atr)
     
-    # Today's OHLC up to this point
-    today_data = data.tail(min(len(data), 75))  # ~6 hours of 5-min data
-    today_high = today_data['High'].max()
-    today_low = today_data['Low'].min()
+    supertrend = pd.Series(index=df.index, dtype=float)
+    direction = pd.Series(index=df.index, dtype=int)
     
-    # RSI
-    rsi = calculate_rsi(data['Close'])
-    
-    # Supertrend
-    supertrend = calculate_supertrend(data['High'], data['Low'], data['Close'])
-    
-    # Volume analysis
-    avg_volume = data['Volume'].tail(20).mean()
-    current_volume = data['Volume'].iloc[-1]
-    volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
-    
-    # VWAP
-    typical_price = (data['High'] + data['Low'] + data['Close']) / 3
-    vwap = (typical_price * data['Volume']).sum() / data['Volume'].sum()
-    vwap_signal = "BULLISH" if ltp > vwap else "BEARISH"
-    
-    # Calculate signal
-    long_score = 0
-    short_score = 0
-    
-    if supertrend == "BULLISH":
-        long_score += 30
-    elif supertrend == "BEARISH":
-        short_score += 30
-    
-    if vwap_signal == "BULLISH":
-        long_score += 20
-    else:
-        short_score += 20
-    
-    if rsi < 40:
-        long_score += 15
-    elif rsi > 60:
-        short_score += 15
-    
-    if change_pct > 0.3:
-        long_score += 10
-    elif change_pct < -0.3:
-        short_score += 10
-    
-    if volume_ratio > 1.5:
-        if change_pct > 0:
-            long_score += 10
+    for i in range(period, len(df)):
+        if df['Close'].iloc[i] > upper_band.iloc[i-1]:
+            supertrend.iloc[i] = lower_band.iloc[i]
+            direction.iloc[i] = 1  # Bullish
+        elif df['Close'].iloc[i] < lower_band.iloc[i-1]:
+            supertrend.iloc[i] = upper_band.iloc[i]
+            direction.iloc[i] = -1  # Bearish
         else:
-            short_score += 10
+            supertrend.iloc[i] = supertrend.iloc[i-1]
+            direction.iloc[i] = direction.iloc[i-1]
+            
+            if direction.iloc[i] == 1 and lower_band.iloc[i] > supertrend.iloc[i]:
+                supertrend.iloc[i] = lower_band.iloc[i]
+            elif direction.iloc[i] == -1 and upper_band.iloc[i] < supertrend.iloc[i]:
+                supertrend.iloc[i] = upper_band.iloc[i]
     
-    # Determine signal
-    if long_score > short_score and long_score >= 40:
-        signal = "LONG"
-        entry = ltp
-        stoploss = round(ltp * 0.993, 2)
-        target1 = round(ltp * 1.01, 2)  # 1% target
-        target2 = round(ltp * 1.015, 2)  # 1.5% target
-    elif short_score > long_score and short_score >= 40:
-        signal = "SHORT"
-        entry = ltp
-        stoploss = round(ltp * 1.007, 2)
-        target1 = round(ltp * 0.99, 2)
-        target2 = round(ltp * 0.985, 2)
-    else:
-        return None
-    
-    return {
-        "symbol": symbol,
-        "signal": signal,
-        "entry": entry,
-        "stoploss": stoploss,
-        "target1": target1,
-        "target2": target2,
-        "rsi": round(rsi, 1),
-        "supertrend": supertrend,
-        "vwap_signal": vwap_signal,
-        "volume_ratio": round(volume_ratio, 1),
-        "time_idx": time_idx,
-        "long_score": long_score,
-        "short_score": short_score
-    }
+    return supertrend, direction
 
-def check_prediction_outcome(prediction: Dict, future_data: pd.DataFrame) -> Dict:
-    """Check if a prediction hit target or stoploss"""
-    if future_data.empty or len(future_data) < 2:
-        return {"outcome": "NO_DATA", "max_profit_pct": 0, "max_loss_pct": 0}
+def calculate_vwap(df):
+    """Calculate VWAP"""
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    vwap = (typical_price * df['Volume']).cumsum() / df['Volume'].cumsum()
+    return vwap
+
+def calculate_atr(df, period=14):
+    """Calculate ATR"""
+    tr1 = df['High'] - df['Low']
+    tr2 = abs(df['High'] - df['Close'].shift(1))
+    tr3 = abs(df['Low'] - df['Close'].shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean()
+
+def calculate_adx(df, di_length=10, adx_smoothing=10):
+    """Calculate ADX"""
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
     
-    entry = prediction["entry"]
-    target1 = prediction["target1"]
-    stoploss = prediction["stoploss"]
-    signal = prediction["signal"]
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
     
-    target_hit = False
-    stoploss_hit = False
-    max_favorable = 0
-    max_adverse = 0
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
     
-    for i in range(len(future_data)):
-        high = future_data['High'].iloc[i]
-        low = future_data['Low'].iloc[i]
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    atr = tr.rolling(window=di_length).mean()
+    plus_di = 100 * (plus_dm.rolling(window=di_length).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(window=di_length).mean() / atr)
+    
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    adx = dx.rolling(window=adx_smoothing).mean()
+    
+    return adx, plus_di, minus_di
+
+def analyze_signal_outcome(df, signal_idx, signal_type, entry, stoploss, target1, target2):
+    """
+    Analyze what happened after a signal was generated
+    Returns: outcome dict with result and details
+    """
+    if signal_idx >= len(df) - 1:
+        return {"result": "NO_DATA", "reason": "Signal at end of day"}
+    
+    # Look at candles after signal
+    future_df = df.iloc[signal_idx + 1:]
+    
+    if len(future_df) == 0:
+        return {"result": "NO_DATA", "reason": "No future data"}
+    
+    # Track price action
+    for i, (idx, row) in enumerate(future_df.iterrows()):
+        if signal_type == "LONG":
+            # Check if entry was achieved
+            if row['Low'] <= entry:
+                # Entry triggered, now check outcome
+                for j, (idx2, row2) in enumerate(future_df.iloc[i:].iterrows()):
+                    if row2['Low'] <= stoploss:
+                        return {
+                            "result": "SL_HIT",
+                            "reason": f"Stoploss hit after {j+1} candles",
+                            "candles_to_outcome": j + 1,
+                            "loss_pct": ((stoploss - entry) / entry) * 100
+                        }
+                    if row2['High'] >= target1:
+                        return {
+                            "result": "T1_HIT",
+                            "reason": f"Target 1 hit after {j+1} candles",
+                            "candles_to_outcome": j + 1,
+                            "profit_pct": ((target1 - entry) / entry) * 100
+                        }
+                    if row2['High'] >= target2:
+                        return {
+                            "result": "T2_HIT",
+                            "reason": f"Target 2 hit after {j+1} candles",
+                            "candles_to_outcome": j + 1,
+                            "profit_pct": ((target2 - entry) / entry) * 100
+                        }
+                
+                # Neither SL nor target hit - check final price
+                final_price = future_df.iloc[-1]['Close']
+                pnl_pct = ((final_price - entry) / entry) * 100
+                return {
+                    "result": "OPEN" if pnl_pct > 0 else "UNDERWATER",
+                    "reason": f"Trade still open, PnL: {pnl_pct:.2f}%",
+                    "pnl_pct": pnl_pct
+                }
         
-        if signal == "LONG":
-            # Check if target hit
-            if high >= target1:
-                target_hit = True
-                break
-            # Check if stoploss hit
-            if low <= stoploss:
-                stoploss_hit = True
-                break
-            # Track max profit/loss
-            max_favorable = max(max_favorable, (high - entry) / entry * 100)
-            max_adverse = max(max_adverse, (entry - low) / entry * 100)
         else:  # SHORT
-            # Check if target hit
-            if low <= target1:
-                target_hit = True
-                break
-            # Check if stoploss hit
-            if high >= stoploss:
-                stoploss_hit = True
-                break
-            # Track max profit/loss
-            max_favorable = max(max_favorable, (entry - low) / entry * 100)
-            max_adverse = max(max_adverse, (high - entry) / entry * 100)
+            if row['High'] >= entry:
+                # Entry triggered, now check outcome
+                for j, (idx2, row2) in enumerate(future_df.iloc[i:].iterrows()):
+                    if row2['High'] >= stoploss:
+                        return {
+                            "result": "SL_HIT",
+                            "reason": f"Stoploss hit after {j+1} candles",
+                            "candles_to_outcome": j + 1,
+                            "loss_pct": ((entry - stoploss) / entry) * 100
+                        }
+                    if row2['Low'] <= target1:
+                        return {
+                            "result": "T1_HIT",
+                            "reason": f"Target 1 hit after {j+1} candles",
+                            "candles_to_outcome": j + 1,
+                            "profit_pct": ((entry - target1) / entry) * 100
+                        }
+                    if row2['Low'] <= target2:
+                        return {
+                            "result": "T2_HIT",
+                            "reason": f"Target 2 hit after {j+1} candles",
+                            "candles_to_outcome": j + 1,
+                            "profit_pct": ((entry - target2) / entry) * 100
+                        }
+                
+                # Neither SL nor target hit
+                final_price = future_df.iloc[-1]['Close']
+                pnl_pct = ((entry - final_price) / entry) * 100
+                return {
+                    "result": "OPEN" if pnl_pct > 0 else "UNDERWATER",
+                    "reason": f"Trade still open, PnL: {pnl_pct:.2f}%",
+                    "pnl_pct": pnl_pct
+                }
     
-    if target_hit:
-        outcome = "WIN"
-    elif stoploss_hit:
-        outcome = "LOSS"
-    else:
-        # Check final price
-        final_price = future_data['Close'].iloc[-1]
-        if signal == "LONG":
-            if final_price > entry:
-                outcome = "PARTIAL_WIN"
-            else:
-                outcome = "PARTIAL_LOSS"
-        else:
-            if final_price < entry:
-                outcome = "PARTIAL_WIN"
-            else:
-                outcome = "PARTIAL_LOSS"
-    
-    return {
-        "outcome": outcome,
-        "max_profit_pct": round(max_favorable, 2),
-        "max_loss_pct": round(max_adverse, 2),
-        "target_hit": target_hit,
-        "stoploss_hit": stoploss_hit
-    }
+    return {"result": "NO_ENTRY", "reason": "Entry price never reached"}
 
-def run_backtest():
-    """Run backtest for today's predictions"""
-    print("=" * 70)
-    print("BACKTEST: Today's Predictions Analysis")
-    print(f"Date: {datetime.now().strftime('%Y-%m-%d')}")
-    print("=" * 70)
+def generate_and_backtest_signals(symbol, df_5m, df_10m):
+    """Generate signals and backtest them"""
+    signals = []
     
-    all_predictions = []
+    if len(df_5m) < 30 or len(df_10m) < 20:
+        return signals
     
-    # Analyze each stock
-    for symbol in NIFTY_50_STOCKS[:20]:  # Top 20 stocks
-        try:
-            yahoo_symbol = get_yahoo_symbol(symbol)
-            ticker = yf.Ticker(yahoo_symbol)
-            
-            # Get 5-minute data for today and yesterday
-            hist = ticker.history(period="2d", interval="5m")
-            
-            if hist.empty or len(hist) < 50:
+    # Calculate indicators for 5m
+    df_5m['VWAP'] = calculate_vwap(df_5m)
+    df_5m['ST'], df_5m['ST_Dir'] = calculate_supertrend(df_5m, 10, 3)
+    df_5m['ATR'] = calculate_atr(df_5m, 14)
+    df_5m['ADX'], df_5m['Plus_DI'], df_5m['Minus_DI'] = calculate_adx(df_5m, 10, 10)
+    
+    # Calculate indicators for 10m
+    df_10m['VWAP'] = calculate_vwap(df_10m)
+    df_10m['ST'], df_10m['ST_Dir'] = calculate_supertrend(df_10m, 10, 3)
+    
+    # Market hours: 9:15 AM to 3:30 PM IST
+    market_open = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = datetime.now(IST).replace(hour=15, minute=0, second=0, microsecond=0)
+    
+    # Iterate through 5m candles looking for signals
+    for i in range(20, len(df_5m) - 5):  # Leave room for outcome analysis
+        row = df_5m.iloc[i]
+        timestamp = row.name
+        
+        # Skip if outside market hours
+        if hasattr(timestamp, 'hour'):
+            if timestamp.hour < 9 or (timestamp.hour == 9 and timestamp.minute < 30):
                 continue
-            
-            # Filter to today's data only
-            today = datetime.now().date()
-            if hist.index.tz is not None:
-                hist.index = hist.index.tz_convert('Asia/Kolkata')
-            
-            today_mask = hist.index.date == today
-            today_data = hist[today_mask]
-            
-            if len(today_data) < 20:
-                print(f"{symbol}: Insufficient data ({len(today_data)} candles)")
+            if timestamp.hour >= 15:
                 continue
-            
-            # Simulate predictions at different times
-            # 10:00 AM, 11:00 AM, 12:00 PM, 1:00 PM, 2:00 PM
-            check_times = [12, 24, 36, 48, 60]  # Candle indices (~10, 11, 12, 1, 2 PM)
-            
-            for time_idx in check_times:
-                if time_idx >= len(today_data) - 12:  # Need at least 1 hour of future data
-                    continue
-                
-                prediction = analyze_stock_at_time(symbol, hist, len(hist) - len(today_data) + time_idx)
-                
-                if prediction:
-                    # Get future data (next 1-2 hours)
-                    future_start = len(hist) - len(today_data) + time_idx + 1
-                    future_end = min(future_start + 24, len(hist))  # ~2 hours
-                    future_data = hist.iloc[future_start:future_end]
-                    
-                    # Check outcome
-                    result = check_prediction_outcome(prediction, future_data)
-                    prediction.update(result)
-                    prediction["check_time"] = today_data.index[time_idx].strftime("%H:%M") if time_idx < len(today_data) else "N/A"
-                    
-                    all_predictions.append(prediction)
-                    
-        except Exception as e:
-            print(f"Error analyzing {symbol}: {e}")
+        
+        ltp = row['Close']
+        vwap_5m = row['VWAP']
+        st_5m = row['ST']
+        st_dir_5m = row['ST_Dir']
+        atr = row['ATR']
+        adx = row['ADX']
+        plus_di = row['Plus_DI']
+        minus_di = row['Minus_DI']
+        
+        if pd.isna(adx) or pd.isna(st_5m) or pd.isna(atr):
             continue
+        
+        # Find corresponding 10m data
+        ts_10m = timestamp.floor('10T') if hasattr(timestamp, 'floor') else timestamp
+        if ts_10m not in df_10m.index:
+            continue
+        
+        row_10m = df_10m.loc[ts_10m]
+        st_dir_10m = row_10m['ST_Dir']
+        vwap_10m = row_10m['VWAP']
+        
+        # ADX filter - require rising ADX or strong trend
+        adx_prev = df_5m['ADX'].iloc[i-1] if i > 0 else adx
+        adx_change = adx - adx_prev
+        adx_rising = adx_change > 0.5
+        
+        if adx < 20 or (not adx_rising and adx < 30):
+            continue
+        
+        # LONG signal conditions
+        long_conditions = 0
+        if ltp > vwap_5m:
+            long_conditions += 1
+        if st_dir_5m == 1:
+            long_conditions += 1
+        if st_dir_10m == 1:
+            long_conditions += 1
+        if ltp > vwap_10m:
+            long_conditions += 1
+        if plus_di > minus_di:
+            long_conditions += 1
+        
+        # SHORT signal conditions
+        short_conditions = 0
+        if ltp < vwap_5m:
+            short_conditions += 1
+        if st_dir_5m == -1:
+            short_conditions += 1
+        if st_dir_10m == -1:
+            short_conditions += 1
+        if ltp < vwap_10m:
+            short_conditions += 1
+        if minus_di > plus_di:
+            short_conditions += 1
+        
+        # Generate signal if enough confirmations
+        if long_conditions >= 4:
+            entry = round(ltp * 0.9985, 2)  # 0.15% pullback
+            stoploss = round(entry - (atr * 1.5), 2)
+            target1 = round(entry + (atr * 1.0), 2)
+            target2 = round(entry + (atr * 1.5), 2)
+            
+            outcome = analyze_signal_outcome(df_5m, i, "LONG", entry, stoploss, target1, target2)
+            
+            signals.append({
+                "symbol": symbol,
+                "time": str(timestamp),
+                "type": "LONG",
+                "ltp": ltp,
+                "entry": entry,
+                "stoploss": stoploss,
+                "target1": target1,
+                "target2": target2,
+                "adx": round(adx, 1),
+                "adx_rising": adx_rising,
+                "confirmations": long_conditions,
+                "outcome": outcome
+            })
+        
+        elif short_conditions >= 4:
+            entry = round(ltp * 1.0015, 2)  # 0.15% bounce
+            stoploss = round(entry + (atr * 1.5), 2)
+            target1 = round(entry - (atr * 1.0), 2)
+            target2 = round(entry - (atr * 1.5), 2)
+            
+            outcome = analyze_signal_outcome(df_5m, i, "SHORT", entry, stoploss, target1, target2)
+            
+            signals.append({
+                "symbol": symbol,
+                "time": str(timestamp),
+                "type": "SHORT",
+                "ltp": ltp,
+                "entry": entry,
+                "stoploss": stoploss,
+                "target1": target1,
+                "target2": target2,
+                "adx": round(adx, 1),
+                "adx_rising": adx_rising,
+                "confirmations": short_conditions,
+                "outcome": outcome
+            })
     
-    if not all_predictions:
-        print("\nNo predictions generated. Market may be closed or no clear signals.")
+    return signals
+
+def main():
+    print("=" * 80)
+    print("DAYTRADE BACKTEST - TODAY'S SIGNALS")
+    print("=" * 80)
+    print(f"Date: {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}")
+    print()
+    
+    all_signals = []
+    errors = []
+    
+    print(f"Analyzing {len(NIFTY_100)} stocks...")
+    print()
+    
+    for i, symbol in enumerate(NIFTY_100):
+        try:
+            ticker = yf.Ticker(f"{symbol}.NS")
+            
+            # Get today's 5-minute data
+            df_5m = ticker.history(period="1d", interval="5m")
+            df_10m = ticker.history(period="1d", interval="15m")  # Use 15m as proxy for 10m
+            
+            if len(df_5m) > 20 and len(df_10m) > 10:
+                signals = generate_and_backtest_signals(symbol, df_5m, df_10m)
+                all_signals.extend(signals)
+                
+                if signals:
+                    print(f"  {symbol}: {len(signals)} signals")
+            
+        except Exception as e:
+            errors.append(f"{symbol}: {str(e)[:50]}")
+            continue
+        
+        # Progress
+        if (i + 1) % 10 == 0:
+            print(f"Progress: {i+1}/{len(NIFTY_100)} stocks processed...")
+    
+    print()
+    print("=" * 80)
+    print("BACKTEST RESULTS")
+    print("=" * 80)
+    
+    if not all_signals:
+        print("No signals generated today!")
         return
     
-    # Analyze results
-    print(f"\n{'='*70}")
-    print("PREDICTION RESULTS")
-    print(f"{'='*70}")
+    # Analyze outcomes
+    total = len(all_signals)
+    t1_hits = sum(1 for s in all_signals if s["outcome"]["result"] == "T1_HIT")
+    t2_hits = sum(1 for s in all_signals if s["outcome"]["result"] == "T2_HIT")
+    sl_hits = sum(1 for s in all_signals if s["outcome"]["result"] == "SL_HIT")
+    no_entry = sum(1 for s in all_signals if s["outcome"]["result"] == "NO_ENTRY")
+    open_trades = sum(1 for s in all_signals if s["outcome"]["result"] in ["OPEN", "UNDERWATER"])
+    no_data = sum(1 for s in all_signals if s["outcome"]["result"] == "NO_DATA")
     
-    wins = [p for p in all_predictions if p["outcome"] == "WIN"]
-    losses = [p for p in all_predictions if p["outcome"] == "LOSS"]
-    partial_wins = [p for p in all_predictions if p["outcome"] == "PARTIAL_WIN"]
-    partial_losses = [p for p in all_predictions if p["outcome"] == "PARTIAL_LOSS"]
+    winners = t1_hits + t2_hits
+    losers = sl_hits
     
-    total = len(all_predictions)
-    win_rate = (len(wins) / total * 100) if total > 0 else 0
-    success_rate = ((len(wins) + len(partial_wins)) / total * 100) if total > 0 else 0
+    print(f"\nTotal Signals: {total}")
+    print(f"  LONG:  {sum(1 for s in all_signals if s['type'] == 'LONG')}")
+    print(f"  SHORT: {sum(1 for s in all_signals if s['type'] == 'SHORT')}")
+    print()
     
-    print(f"\n📊 SUMMARY")
-    print(f"   Total Predictions: {total}")
-    print(f"   ✅ Wins (Target Hit): {len(wins)}")
-    print(f"   ❌ Losses (SL Hit): {len(losses)}")
-    print(f"   📈 Partial Wins: {len(partial_wins)}")
-    print(f"   📉 Partial Losses: {len(partial_losses)}")
-    print(f"\n   🎯 Win Rate (Target Hit): {win_rate:.1f}%")
-    print(f"   📈 Success Rate (Win + Partial Win): {success_rate:.1f}%")
+    print("OUTCOMES:")
+    print(f"  ✅ T1 Hit (Win):     {t1_hits} ({t1_hits/total*100:.1f}%)")
+    print(f"  ✅ T2 Hit (Win):     {t2_hits} ({t2_hits/total*100:.1f}%)")
+    print(f"  ❌ SL Hit (Loss):    {sl_hits} ({sl_hits/total*100:.1f}%)")
+    print(f"  ⏳ No Entry:         {no_entry} ({no_entry/total*100:.1f}%)")
+    print(f"  ⏳ Still Open:       {open_trades} ({open_trades/total*100:.1f}%)")
+    print()
     
-    # Breakdown by signal type
-    long_preds = [p for p in all_predictions if p["signal"] == "LONG"]
-    short_preds = [p for p in all_predictions if p["signal"] == "SHORT"]
+    if winners + losers > 0:
+        win_rate = winners / (winners + losers) * 100
+        print(f"WIN RATE: {win_rate:.1f}% ({winners} wins / {winners + losers} completed trades)")
     
-    long_wins = len([p for p in long_preds if p["outcome"] in ["WIN", "PARTIAL_WIN"]])
-    short_wins = len([p for p in short_preds if p["outcome"] in ["WIN", "PARTIAL_WIN"]])
+    # Calculate average profit/loss
+    profits = [s["outcome"].get("profit_pct", 0) for s in all_signals if "profit_pct" in s["outcome"]]
+    losses = [s["outcome"].get("loss_pct", 0) for s in all_signals if "loss_pct" in s["outcome"]]
     
-    print(f"\n📊 BY SIGNAL TYPE")
-    print(f"   LONG Predictions: {len(long_preds)} (Success: {long_wins}/{len(long_preds)})")
-    print(f"   SHORT Predictions: {len(short_preds)} (Success: {short_wins}/{len(short_preds)})")
+    if profits:
+        print(f"Avg Profit (winners): +{np.mean(profits):.2f}%")
+    if losses:
+        print(f"Avg Loss (losers): {np.mean(losses):.2f}%")
     
-    # Top performers and worst performers
-    print(f"\n✅ TOP WINNING PREDICTIONS:")
-    for p in sorted(wins, key=lambda x: x["max_profit_pct"], reverse=True)[:5]:
-        print(f"   {p['symbol']} {p['signal']} @ {p['check_time']} - Max Profit: +{p['max_profit_pct']:.2f}%")
+    # Show failed signals for analysis
+    print()
+    print("=" * 80)
+    print("FAILED SIGNALS ANALYSIS (SL Hit)")
+    print("=" * 80)
     
-    print(f"\n❌ LOSING PREDICTIONS:")
-    for p in losses[:5]:
-        print(f"   {p['symbol']} {p['signal']} @ {p['check_time']} - Max Loss: -{p['max_loss_pct']:.2f}%")
+    failed = [s for s in all_signals if s["outcome"]["result"] == "SL_HIT"]
     
-    # Detailed breakdown
-    print(f"\n{'='*70}")
-    print("DETAILED PREDICTIONS")
-    print(f"{'='*70}")
-    print(f"{'Symbol':<12} {'Signal':<6} {'Time':<6} {'Entry':>10} {'Target':>10} {'SL':>10} {'Outcome':<12} {'Max P/L':>10}")
-    print("-" * 80)
+    if failed:
+        for s in failed[:10]:  # Show first 10
+            print(f"\n{s['symbol']} {s['type']} @ {s['time']}")
+            print(f"  Entry: ₹{s['entry']:.2f} | SL: ₹{s['stoploss']:.2f} | T1: ₹{s['target1']:.2f}")
+            print(f"  ADX: {s['adx']} {'↑' if s['adx_rising'] else '↓'} | Confirmations: {s['confirmations']}")
+            print(f"  Outcome: {s['outcome']['reason']}")
+            print(f"  Loss: {s['outcome'].get('loss_pct', 0):.2f}%")
+    else:
+        print("No failed signals!")
     
-    for p in sorted(all_predictions, key=lambda x: x["symbol"]):
-        outcome_emoji = "✅" if p["outcome"] == "WIN" else "❌" if p["outcome"] == "LOSS" else "📊"
-        max_pl = f"+{p['max_profit_pct']:.1f}%" if p["outcome"] in ["WIN", "PARTIAL_WIN"] else f"-{p['max_loss_pct']:.1f}%"
-        print(f"{p['symbol']:<12} {p['signal']:<6} {p['check_time']:<6} {p['entry']:>10.2f} {p['target1']:>10.2f} {p['stoploss']:>10.2f} {outcome_emoji} {p['outcome']:<10} {max_pl:>10}")
+    # Show winning signals
+    print()
+    print("=" * 80)
+    print("WINNING SIGNALS (T1/T2 Hit)")
+    print("=" * 80)
     
-    print(f"\n{'='*70}")
-    print("STRATEGY INSIGHTS")
-    print(f"{'='*70}")
+    winners_list = [s for s in all_signals if s["outcome"]["result"] in ["T1_HIT", "T2_HIT"]]
     
-    # Supertrend analysis
-    st_bullish_preds = [p for p in all_predictions if p["supertrend"] == "BULLISH"]
-    st_bearish_preds = [p for p in all_predictions if p["supertrend"] == "BEARISH"]
+    if winners_list:
+        for s in winners_list[:10]:
+            print(f"\n{s['symbol']} {s['type']} @ {s['time']}")
+            print(f"  Entry: ₹{s['entry']:.2f} | SL: ₹{s['stoploss']:.2f} | T1: ₹{s['target1']:.2f}")
+            print(f"  ADX: {s['adx']} {'↑' if s['adx_rising'] else '↓'} | Confirmations: {s['confirmations']}")
+            print(f"  Outcome: {s['outcome']['reason']}")
+            print(f"  Profit: +{s['outcome'].get('profit_pct', 0):.2f}%")
+    else:
+        print("No winning signals!")
     
-    st_bullish_wins = len([p for p in st_bullish_preds if p["outcome"] in ["WIN", "PARTIAL_WIN"]])
-    st_bearish_wins = len([p for p in st_bearish_preds if p["outcome"] in ["WIN", "PARTIAL_WIN"]])
+    # Identify patterns in failures
+    print()
+    print("=" * 80)
+    print("FAILURE PATTERN ANALYSIS")
+    print("=" * 80)
     
-    print(f"\n📈 Supertrend Analysis:")
-    if st_bullish_preds:
-        print(f"   BULLISH Supertrend: {st_bullish_wins}/{len(st_bullish_preds)} successful ({st_bullish_wins/len(st_bullish_preds)*100:.1f}%)")
-    if st_bearish_preds:
-        print(f"   BEARISH Supertrend: {st_bearish_wins}/{len(st_bearish_preds)} successful ({st_bearish_wins/len(st_bearish_preds)*100:.1f}%)")
+    if failed:
+        # ADX analysis
+        avg_adx_failed = np.mean([s['adx'] for s in failed])
+        avg_adx_winners = np.mean([s['adx'] for s in winners_list]) if winners_list else 0
+        print(f"\nAvg ADX in Failed: {avg_adx_failed:.1f}")
+        print(f"Avg ADX in Winners: {avg_adx_winners:.1f}")
+        
+        # ADX rising analysis
+        failed_rising = sum(1 for s in failed if s['adx_rising'])
+        winners_rising = sum(1 for s in winners_list if s['adx_rising']) if winners_list else 0
+        print(f"\nADX Rising in Failed: {failed_rising}/{len(failed)} ({failed_rising/len(failed)*100:.0f}%)")
+        if winners_list:
+            print(f"ADX Rising in Winners: {winners_rising}/{len(winners_list)} ({winners_rising/len(winners_list)*100:.0f}%)")
+        
+        # Time analysis
+        print("\nSignals by Time (Failed):")
+        for s in failed:
+            time_str = s['time'].split(' ')[1][:5] if ' ' in s['time'] else s['time'][:5]
+            print(f"  {s['symbol']} {s['type']} @ {time_str}")
     
-    # Time analysis
-    print(f"\n⏰ Time Analysis:")
-    times = set(p["check_time"] for p in all_predictions)
-    for t in sorted(times):
-        time_preds = [p for p in all_predictions if p["check_time"] == t]
-        time_wins = len([p for p in time_preds if p["outcome"] in ["WIN", "PARTIAL_WIN"]])
-        print(f"   {t}: {time_wins}/{len(time_preds)} successful")
+    print()
+    print("=" * 80)
+    print("RECOMMENDATIONS")
+    print("=" * 80)
     
-    return all_predictions
+    if losers > winners:
+        print("\n⚠️  More losses than wins today!")
+        print("\nPossible improvements:")
+        print("  1. Increase ADX threshold (current: 20, try: 25)")
+        print("  2. Require more confirmations (current: 4, try: 5)")
+        print("  3. Tighten stoploss (current: 1.5x ATR, try: 1.2x ATR)")
+        print("  4. Check market trend before trading (avoid trading against market)")
+        print("  5. Avoid first 30 min and last 30 min of market")
+    else:
+        print("\n✅ Strategy performing well today!")
 
 if __name__ == "__main__":
-    run_backtest()
+    main()
